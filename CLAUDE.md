@@ -90,7 +90,7 @@ Two-project layout:
 - **Configuration**: Microsoft.Extensions.Configuration (JSON + Environment Variables)
 - **Logging**: Microsoft.Extensions.Logging (console)
 - **Testing**: MSTest
-- **Deployment**: Docker (publicly available image)
+- **Deployment**: Docker via .NET SDK container publish (`dotnet publish -t:PublishContainer`) — no Dockerfile needed
 
 ## Dependency Policy
 

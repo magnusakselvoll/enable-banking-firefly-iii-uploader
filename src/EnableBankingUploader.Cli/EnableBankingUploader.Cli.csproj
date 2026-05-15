@@ -24,6 +24,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <ContainerRepository>ghcr.io/magnusakselvoll/enable-banking-firefly-iii-uploader</ContainerRepository>
   </PropertyGroup>
 
 </Project>

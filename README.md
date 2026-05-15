@@ -58,3 +58,15 @@ dotnet build
 dotnet test
 dotnet run --project src/EnableBankingUploader.Cli
 ```
+
+## Building and publishing the container image
+
+The project uses the .NET SDK's built-in container support — no Dockerfile needed.
+
+```bash
+# Build and push to ghcr.io
+dotnet publish src/EnableBankingUploader.Cli -c Release -t:PublishContainer
+
+# Build locally (without pushing)
+dotnet publish src/EnableBankingUploader.Cli -c Release -t:PublishContainer -p:ContainerRegistry=
+```

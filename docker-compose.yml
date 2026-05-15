@@ -1,6 +1,5 @@
 services:
   uploader:
-    build: .
     image: ghcr.io/magnusakselvoll/enable-banking-firefly-iii-uploader:latest
     restart: "no"
     environment:
