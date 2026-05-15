@@ -2,6 +2,7 @@
 obj/
 bin/
 *.user
+*.lscache
 .vs/
 *.DotSettings.user
 .idea/
