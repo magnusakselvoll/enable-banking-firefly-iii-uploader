@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EnableBankingUploader.Cli/EnableBankingUploader.Cli.csproj" />
+    <Project Path="src/EnableBankingUploader.Core/EnableBankingUploader.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EnableBankingUploader.Tests/EnableBankingUploader.Tests.csproj" />
+  </Folder>
+</Solution>

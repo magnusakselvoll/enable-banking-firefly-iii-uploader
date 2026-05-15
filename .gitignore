@@ -1,0 +1,13 @@
+# .NET
+obj/
+bin/
+*.user
+.vs/
+*.DotSettings.user
+.idea/
+
+# Secrets — PEM keys, .env files, tokens
+/secrets/
+
+# Rider
+*.sln.iml

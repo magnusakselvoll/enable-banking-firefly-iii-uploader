@@ -85,7 +85,7 @@ Two-project layout:
 ## Tech Stack
 
 - **Language/Runtime**: C# / .NET 10
-- **HTTP clients**: Generated from Enable Banking OpenAPI spec + Firefly III OpenAPI spec (or hand-written wrappers)
+- **HTTP clients**: Hand-written wrappers (`EnableBankingClient`, `FireflyIiiClient`)
 - **Retry**: Polly
 - **Configuration**: Microsoft.Extensions.Configuration (JSON + Environment Variables)
 - **Logging**: Microsoft.Extensions.Logging (console)
@@ -110,11 +110,14 @@ Minimize external dependencies. Only add well-established, widely-used libraries
 
 | Key | Env var | Default | Description |
 |-----|---------|---------|-------------|
-| `EnableBankingUploader:EnableBankingApiKey` | `EnableBankingUploader__EnableBankingApiKey` | *(required)* | Enable Banking production API key |
+| `EnableBankingUploader:EnableBankingApplicationId` | `EnableBankingUploader__EnableBankingApplicationId` | *(required)* | Enable Banking application UUID (used as JWT issuer/kid) |
+| `EnableBankingUploader:EnableBankingPrivateKeyPath` | `EnableBankingUploader__EnableBankingPrivateKeyPath` | *(required)* | Path to RSA private key PEM file for Enable Banking JWT signing |
 | `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required)* | Base URL of the Firefly III instance |
 | `EnableBankingUploader:FireflyIiiToken` | `EnableBankingUploader__FireflyIiiToken` | *(required)* | Firefly III personal access token |
 | `EnableBankingUploader:Schedule` | `EnableBankingUploader__Schedule` | `0 18 * * *` | Cron expression for sync schedule |
 | `EnableBankingUploader:LookbackDays` | `EnableBankingUploader__LookbackDays` | `1` | Extra days to look back for late-arriving transactions |
+
+Place the RSA private key PEM file in the `secrets/` directory (gitignored). The `docker-compose.yml` mounts `./secrets/enablebanking.pem` into the container at the configured path.
 
 ## Running via Docker Compose
 

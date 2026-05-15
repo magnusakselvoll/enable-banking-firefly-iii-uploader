@@ -1,0 +1,19 @@
+services:
+  uploader:
+    build: .
+    image: ghcr.io/magnusakselvoll/enable-banking-firefly-iii-uploader:latest
+    restart: "no"
+    environment:
+      EnableBankingUploader__EnableBankingApplicationId: "${EB_APPLICATION_ID}"
+      EnableBankingUploader__EnableBankingPrivateKeyPath: "/run/secrets/eb_private_key"
+      EnableBankingUploader__FireflyIiiUrl: "${FIREFLY_URL}"
+      EnableBankingUploader__FireflyIiiToken: "${FIREFLY_TOKEN}"
+      EnableBankingUploader__Schedule: "${SCHEDULE:-0 18 * * *}"
+    volumes:
+      - ./secrets/enablebanking.pem:/run/secrets/eb_private_key:ro
+    networks:
+      - firefly_iii
+
+networks:
+  firefly_iii:
+    external: true
