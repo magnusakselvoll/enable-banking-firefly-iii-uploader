@@ -21,14 +21,11 @@ public sealed class EnableBankingClient : IEnableBankingClient
         _logger = logger;
     }
 
-    public async Task<IReadOnlyList<Session>> GetSessionsAsync(CancellationToken cancellationToken = default)
+    public async Task<Session> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.GetFromJsonAsync<SessionsResponse>(
-            "sessions", JsonOptions, cancellationToken)
-            ?? throw new InvalidOperationException("Enable Banking returned null sessions response.");
-
-        _logger.LogInformation("Retrieved {Count} sessions from Enable Banking.", response.Sessions.Count);
-        return response.Sessions;
+        return await _httpClient.GetFromJsonAsync<Session>(
+            $"sessions/{sessionId}", JsonOptions, cancellationToken)
+            ?? throw new InvalidOperationException($"Enable Banking returned null response for session {sessionId}.");
     }
 
     public async Task<Account> GetAccountAsync(string accountUid, CancellationToken cancellationToken = default)

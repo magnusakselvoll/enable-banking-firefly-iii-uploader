@@ -33,22 +33,46 @@ public sealed class TransactionSyncer
 
     public async Task SyncAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting transaction sync.");
+        if (_options.EnableBankingSessionIds.Count == 0)
+        {
+            _logger.LogWarning("No Enable Banking session IDs configured. Nothing to sync.");
+            return;
+        }
 
-        var sessions = await _enableBanking.GetSessionsAsync(cancellationToken);
+        _logger.LogInformation("Starting transaction sync for {Count} session(s).", _options.EnableBankingSessionIds.Count);
+
         var fireflyAccounts = await _firefly.GetAssetAccountsAsync(cancellationToken);
-
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        foreach (var session in sessions)
+        foreach (var sessionId in _options.EnableBankingSessionIds)
         {
-            foreach (var accountUid in session.AccountUids)
-            {
-                await SyncAccountAsync(accountUid, fireflyAccounts, today, cancellationToken);
-            }
+            await SyncSessionAsync(sessionId, fireflyAccounts, today, cancellationToken);
         }
 
         _logger.LogInformation("Transaction sync completed.");
+    }
+
+    private async Task SyncSessionAsync(
+        string sessionId,
+        IReadOnlyList<FireflyIii.Models.Account> fireflyAccounts,
+        DateOnly today,
+        CancellationToken cancellationToken)
+    {
+        EnableBanking.Models.Session session;
+        try
+        {
+            session = await _enableBanking.GetSessionAsync(sessionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch session {SessionId}. It may be expired — re-authorise in the Enable Banking Control Panel.", sessionId);
+            return;
+        }
+
+        foreach (var accountUid in session.AccountUids)
+        {
+            await SyncAccountAsync(accountUid, fireflyAccounts, today, cancellationToken);
+        }
     }
 
     private async Task SyncAccountAsync(
@@ -80,7 +104,7 @@ public sealed class TransactionSyncer
             : today.AddDays(-DefaultLookbackDays);
 
         _logger.LogInformation(
-            "Syncing account {Name} (IBAN: {Iban}) from {DateFrom} to {DateTo}.",
+            "Syncing {Name} (IBAN: {Iban}) from {DateFrom} to {DateTo}.",
             fireflyAccount.Attributes.Name,
             ebAccount.AccountId?.Iban,
             dateFrom,
@@ -103,32 +127,42 @@ public sealed class TransactionSyncer
 
         foreach (var ebTx in ebTransactions)
         {
-            if (string.IsNullOrEmpty(ebTx.TransactionId))
+            // Only deduplicate booked transactions; pending IDs may be unstable
+            if (!string.Equals(ebTx.Status, "BOOK", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogWarning(
-                    "Enable Banking transaction with no transaction_id on account {Uid}, skipping.", accountUid);
+                _logger.LogDebug("Skipping non-booked transaction (status={Status}).", ebTx.Status);
                 skipped++;
                 continue;
             }
 
-            if (existingExternalIds.Contains(ebTx.TransactionId))
+            // entry_reference is the stable dedup key for booked transactions
+            var externalId = ebTx.EntryReference ?? ebTx.TransactionId;
+            if (string.IsNullOrEmpty(externalId))
+            {
+                _logger.LogWarning("Booked transaction has no entry_reference or transaction_id on account {Uid}, skipping.", accountUid);
+                skipped++;
+                continue;
+            }
+
+            if (existingExternalIds.Contains(externalId))
             {
                 skipped++;
                 continue;
             }
 
-            var store = BuildTransactionStore(ebTx, fireflyAccount);
+            var store = BuildTransactionStore(ebTx, externalId, fireflyAccount);
             await _firefly.CreateTransactionAsync(store, cancellationToken);
             created++;
         }
 
         _logger.LogInformation(
-            "Account {Name}: created {Created}, skipped {Skipped} transactions.",
+            "{Name}: created {Created}, skipped {Skipped} transactions.",
             fireflyAccount.Attributes.Name, created, skipped);
     }
 
     private static TransactionStore BuildTransactionStore(
         EnableBanking.Models.Transaction ebTx,
+        string externalId,
         FireflyIii.Models.Account fireflyAccount)
     {
         var isCredit = string.Equals(ebTx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase);
@@ -144,7 +178,7 @@ public sealed class TransactionSyncer
             Amount: ebTx.TransactionAmount.Amount,
             Description: description,
             CurrencyCode: ebTx.TransactionAmount.Currency,
-            ExternalId: ebTx.TransactionId!,
+            ExternalId: externalId,
             SourceName: isCredit ? (ebTx.DebtorName ?? "Unknown") : fireflyAccount.Attributes.Name,
             DestinationName: isCredit ? fireflyAccount.Attributes.Name : (ebTx.CreditorName ?? "Unknown"));
 

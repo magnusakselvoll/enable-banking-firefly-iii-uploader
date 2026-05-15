@@ -5,6 +5,8 @@ services:
     environment:
       EnableBankingUploader__EnableBankingApplicationId: "${EB_APPLICATION_ID}"
       EnableBankingUploader__EnableBankingPrivateKeyPath: "/run/secrets/eb_private_key"
+      EnableBankingUploader__EnableBankingSessionIds__0: "${EB_SESSION_ID_0}"
+      # Add __1, __2 etc. for additional bank sessions
       EnableBankingUploader__FireflyIiiUrl: "${FIREFLY_URL}"
       EnableBankingUploader__FireflyIiiToken: "${FIREFLY_TOKEN}"
       EnableBankingUploader__Schedule: "${SCHEDULE:-0 18 * * *}"

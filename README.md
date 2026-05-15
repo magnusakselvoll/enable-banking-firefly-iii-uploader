@@ -16,6 +16,7 @@ All secrets are supplied via environment variables. Place your RSA private key a
 |---|---|---|---|
 | `EnableBankingUploader__EnableBankingApplicationId` | yes | — | Enable Banking application UUID |
 | `EnableBankingUploader__EnableBankingPrivateKeyPath` | yes | — | Path to RSA private key PEM inside container |
+| `EnableBankingUploader__EnableBankingSessionIds__0` | yes | — | Session ID from Enable Banking Control Panel (repeat with `__1`, `__2` etc. for multiple banks) |
 | `EnableBankingUploader__FireflyIiiUrl` | yes | — | Base URL of Firefly III (e.g. `http://firefly:8080`) |
 | `EnableBankingUploader__FireflyIiiToken` | yes | — | Firefly III personal access token |
 | `EnableBankingUploader__Schedule` | no | `0 18 * * *` | Cron expression (UTC) |
@@ -42,6 +43,8 @@ The `docker-compose.yml` expects an external Docker network named `firefly_iii`.
 ```bash
 docker network create firefly_iii
 ```
+
+See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for Enable Banking API notes, rate limits, consent validity, and error handling guidance.
 
 ## Account matching
 

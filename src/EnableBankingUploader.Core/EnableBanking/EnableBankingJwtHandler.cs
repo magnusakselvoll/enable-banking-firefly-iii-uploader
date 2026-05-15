@@ -45,7 +45,7 @@ internal sealed class EnableBankingJwtHandler : DelegatingHandler
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Issuer = opts.EnableBankingApplicationId,
-            Audience = "enablebanking.com",
+            Audience = "api.enablebanking.com",
             IssuedAt = now.UtcDateTime,
             Expires = expiry.UtcDateTime,
             SigningCredentials = signingCredentials,

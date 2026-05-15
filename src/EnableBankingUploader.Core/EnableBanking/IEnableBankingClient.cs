@@ -4,7 +4,7 @@ namespace EnableBankingUploader.Core.EnableBanking;
 
 public interface IEnableBankingClient
 {
-    Task<IReadOnlyList<Session>> GetSessionsAsync(CancellationToken cancellationToken = default);
+    Task<Session> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default);
 
     Task<Account> GetAccountAsync(string accountUid, CancellationToken cancellationToken = default);
 

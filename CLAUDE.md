@@ -74,6 +74,8 @@ Two-project layout:
 - **EnableBankingUploader.Core** (`src/EnableBankingUploader.Core/`): Enable Banking API client, Firefly III API client, account matching, transaction deduplication, retry logic. No dependency on the CLI.
 - **EnableBankingUploader.Cli** (`src/EnableBankingUploader.Cli/`): Console executable. Reads configuration, drives the sync loop, schedules execution.
 
+See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for Enable Banking API notes, rate limits, acceptable use, and error handling guidance.
+
 ### Key design decisions (from issue #1)
 
 - **Account matching**: normalize IBANs by removing spaces and separators before comparing Enable Banking accounts to Firefly III asset accounts.
@@ -112,6 +114,7 @@ Minimize external dependencies. Only add well-established, widely-used libraries
 |-----|---------|---------|-------------|
 | `EnableBankingUploader:EnableBankingApplicationId` | `EnableBankingUploader__EnableBankingApplicationId` | *(required)* | Enable Banking application UUID (used as JWT issuer/kid) |
 | `EnableBankingUploader:EnableBankingPrivateKeyPath` | `EnableBankingUploader__EnableBankingPrivateKeyPath` | *(required)* | Path to RSA private key PEM file for Enable Banking JWT signing |
+| `EnableBankingUploader:EnableBankingSessionIds:0` | `EnableBankingUploader__EnableBankingSessionIds__0` | *(required)* | Session IDs from Enable Banking Control Panel — one per bank consent. There is no API to list sessions; they must be configured explicitly. |
 | `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required)* | Base URL of the Firefly III instance |
 | `EnableBankingUploader:FireflyIiiToken` | `EnableBankingUploader__FireflyIiiToken` | *(required)* | Firefly III personal access token |
 | `EnableBankingUploader:Schedule` | `EnableBankingUploader__Schedule` | `0 18 * * *` | Cron expression for sync schedule |
