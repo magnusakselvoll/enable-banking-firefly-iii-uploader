@@ -10,5 +10,8 @@ bin/
 # Secrets — PEM keys, .env files, tokens
 /secrets/
 
+# Local dev session store
+/sessions-dev/
+
 # Rider
 *.sln.iml

@@ -30,7 +30,7 @@ exclusively through the API auth flow and stored on disk by this application.
 **The 4-step flow (handled by this app's web UI):**
 
 1. `GET /aspsps` — retrieve the bank's exact `name` + `country` and its
-   `maximum_consent_validity` (days).
+   `maximum_consent_validity` (seconds).
 2. `POST /auth` — body: `{ access:{valid_until}, aspsp:{name,country}, psu_type,
    redirect_url, state }` → response: `{ url, authorization_id }`.
    The `redirect_url` must be `<PublicBaseUrl>/callback` and must

@@ -2,6 +2,7 @@ using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.EnableBanking.Models;
 using EnableBankingUploader.Core.Options;
 using EnableBankingUploader.Core.Sessions;
+using EnableBankingUploader.Core.Sync;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -20,6 +21,7 @@ internal static class BankRegistrationEndpoints
         app.MapPost("/register", StartRegistrationAsync);
         app.MapGet("/callback", CallbackAsync);
         app.MapPost("/sessions/{sessionId}/delete", DeleteSessionAsync);
+        app.MapPost("/sync", TriggerSyncAsync);
     }
 
     private static async Task<IResult> IndexAsync(
@@ -87,15 +89,12 @@ internal static class BankRegistrationEndpoints
         var publicBaseUrl = options.Value.PublicBaseUrl;
         if (string.IsNullOrEmpty(publicBaseUrl))
             return Results.Content(Html.Error(
-                "PublicBaseUrl is not configured. Set EnableBankingUploader__PublicBaseUrl to the external HTTPS URL of this server."),
-                "text/html");
-
-        if (!publicBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            return Results.Content(Html.Error(
-                "PublicBaseUrl must be an https:// URL. Enable Banking rejects plain http redirect URLs."),
+                "PublicBaseUrl is not configured. Set EnableBankingUploader__PublicBaseUrl to the base URL of this server."),
                 "text/html");
 
         var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
+        if (!publicBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            logger.LogWarning("PublicBaseUrl {Url} is not https://. Production Enable Banking requires https; sandbox may allow http.", publicBaseUrl);
 
         // Resolve the aspsp to get maximum_consent_validity
         Aspsp? aspsp;
@@ -112,8 +111,9 @@ internal static class BankRegistrationEndpoints
             return Results.Content(Html.Error($"Failed to look up bank: {ex.Message}"), "text/html");
         }
 
-        var consentDays = aspsp?.MaximumConsentValidity ?? 90;
-        var validUntil = DateTimeOffset.UtcNow.AddDays(consentDays);
+        const int maxConsentSeconds = 180 * 24 * 3600; // 180 days — cap sandbox extremes
+        var consentSeconds = Math.Min(aspsp?.MaximumConsentValiditySeconds ?? maxConsentSeconds, maxConsentSeconds);
+        var validUntil = DateTimeOffset.UtcNow.AddSeconds(consentSeconds);
         var redirectUrl = publicBaseUrl.TrimEnd('/') + "/callback";
         var oauthState = Guid.NewGuid().ToString("N");
 
@@ -192,6 +192,22 @@ internal static class BankRegistrationEndpoints
             session.SessionId, stored.AspspName, stored.AccountUids.Count);
 
         return Results.Redirect($"/?msg={Uri.EscapeDataString($"Successfully registered {stored.AspspName}.")}");
+    }
+
+    private static IResult TriggerSyncAsync(
+        TransactionSyncer syncer,
+        IOptions<SyncOptions> options,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
+        var label = options.Value.DryRun ? "dry-run sync" : "sync";
+        logger.LogInformation("Manual {Label} triggered via web UI.", label);
+        _ = Task.Run(async () =>
+        {
+            try { await syncer.SyncAsync(); }
+            catch (Exception ex) { logger.LogError(ex, "Manual {Label} failed.", label); }
+        });
+        return Results.Redirect($"/?msg={Uri.EscapeDataString($"Manual {label} started — check the logs for progress.")}");
     }
 
     private static async Task<IResult> DeleteSessionAsync(

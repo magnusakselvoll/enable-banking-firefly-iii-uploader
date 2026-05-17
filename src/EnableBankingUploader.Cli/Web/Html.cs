@@ -53,7 +53,8 @@ internal static class Html
             sb.Append($"<div class=\"banner {cls}\">{Encode(banner)}</div>");
         }
 
-        sb.Append("<a href=\"/register\" class=\"btn\">+ Register new bank</a>");
+        sb.Append("<a href=\"/register\" class=\"btn\">+ Register new bank</a> ");
+        sb.Append("<form method=\"post\" action=\"/sync\"><button class=\"btn btn-secondary\">&#9654; Run sync now</button></form>");
 
         if (sessions.Count == 0)
         {
@@ -125,7 +126,7 @@ internal static class Html
             {
                 var value = $"{a.Name}|{a.Country}";
                 var selected = (a.Name == selectedAspsp && a.Country == selectedCountry) ? " selected" : "";
-                var validity = a.MaximumConsentValidity.HasValue ? $" — up to {a.MaximumConsentValidity} days" : "";
+                var validity = a.MaximumConsentValiditySeconds.HasValue ? $" — up to {a.MaximumConsentValiditySeconds / 86400} days" : "";
                 sb.Append($"<option value=\"{Encode(value)}\"{selected}>{Encode(a.Name)} ({Encode(a.Country)}){Encode(validity)}</option>");
             }
 
