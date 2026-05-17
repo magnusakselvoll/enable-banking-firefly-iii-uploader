@@ -1,0 +1,17 @@
+# .NET
+obj/
+bin/
+*.user
+*.lscache
+.vs/
+*.DotSettings.user
+.idea/
+
+# Secrets — PEM keys, .env files, tokens
+/secrets/
+
+# Local dev session store
+/sessions-dev/
+
+# Rider
+*.sln.iml
