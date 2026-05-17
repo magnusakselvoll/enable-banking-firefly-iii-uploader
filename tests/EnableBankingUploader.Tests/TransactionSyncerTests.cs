@@ -51,7 +51,9 @@ public class TransactionSyncerTests
 
     private static (TransactionSyncer syncer, IEnableBankingClient eb, IFireflyIiiClient ff) CreateSyncer(
         int lookbackDays = 1,
-        ISessionStore? store = null)
+        ISessionStore? store = null,
+        bool whatIf = false,
+        string fireflyUrl = "http://localhost")
     {
         var eb = Substitute.For<IEnableBankingClient>();
         var ff = Substitute.For<IFireflyIiiClient>();
@@ -66,9 +68,10 @@ public class TransactionSyncerTests
         {
             EnableBankingApplicationId = "app-id",
             EnableBankingPrivateKeyPath = "/fake/key.pem",
-            FireflyIiiUrl = "http://localhost",
+            FireflyIiiUrl = fireflyUrl,
             FireflyIiiToken = "token",
             LookbackDays = lookbackDays,
+            WhatIf = whatIf,
         });
         var matcher = new AccountMatcher(NullLogger<AccountMatcher>.Instance);
         var syncer = new TransactionSyncer(eb, ff, store, matcher, options, NullLogger<TransactionSyncer>.Instance);
@@ -225,5 +228,51 @@ public class TransactionSyncerTests
             Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
                 s.Transactions[0].ExternalId == "entry-ref-1"),
             default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_WhatIfOfflineNoFireflyUrl_DoesNotContactFirefly()
+    {
+        var (syncer, eb, ff) = CreateSyncer(whatIf: true, fireflyUrl: "");
+        eb.GetSessionAsync(SessionId, default).Returns(Session());
+        eb.GetAccountAsync(AccountUid, default).Returns(EbAccount());
+        eb.GetTransactionsAsync(AccountUid, Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), default).Returns([]);
+
+        await syncer.SyncAsync();
+
+        await ff.DidNotReceive().GetAssetAccountsAsync(default);
+        await ff.DidNotReceive().GetLatestTransactionDateAsync(Arg.Any<string>(), default);
+        await ff.DidNotReceive().GetTransactionsAsync(Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), default);
+        await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
+        await eb.Received(1).GetTransactionsAsync(AccountUid,
+            Arg.Is<DateOnly>(d => d == new DateOnly(2000, 1, 1)),
+            Arg.Any<DateOnly>(), default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_WhatIfConnected_ReadsButDoesNotWrite()
+    {
+        var (syncer, eb, ff) = CreateSyncer(whatIf: true);
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(entryRef: "ref-new")]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).GetAssetAccountsAsync(default);
+        await ff.Received(1).GetLatestTransactionDateAsync(FireflyAccountId, default);
+        await ff.Received(1).GetTransactionsAsync(FireflyAccountId, Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), default);
+        await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_WhatIfConnected_DuplicateAndNew_NeitherWritten()
+    {
+        var (syncer, eb, ff) = CreateSyncer(whatIf: true);
+        SetupDefaults(eb, ff,
+            ebTx: [EbTransaction(entryRef: "dup"), EbTransaction(entryRef: "new", txId: "tx-2")],
+            ffTx: [FfTransaction("dup")]);
+
+        await syncer.SyncAsync();
+
+        await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
     }
 }

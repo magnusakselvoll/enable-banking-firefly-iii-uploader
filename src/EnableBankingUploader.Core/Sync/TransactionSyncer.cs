@@ -62,16 +62,19 @@ public sealed class TransactionSyncer
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        if (_options.DryRun)
+        if (_options.WhatIf && !_options.HasFireflyIiiUrl)
         {
-            _logger.LogInformation("[DRY RUN] Fetching transactions for {Count} session(s) — nothing will be written to Firefly III.", validSessions.Count);
+            _logger.LogInformation("[WHATIF] No Firefly III URL configured — running offline preview for {Count} session(s). Nothing will be written.", validSessions.Count);
             foreach (var stored in validSessions)
-                await DryRunSessionAsync(stored.SessionId, today, cancellationToken);
-            _logger.LogInformation("[DRY RUN] Done.");
+                await OfflineWhatIfSessionAsync(stored.SessionId, today, cancellationToken);
+            _logger.LogInformation("[WHATIF] Offline preview complete.");
             return;
         }
 
-        _logger.LogInformation("Starting transaction sync for {Count} session(s).", validSessions.Count);
+        if (_options.WhatIf)
+            _logger.LogInformation("[WHATIF] Connected preview for {Count} session(s) — reading from Firefly III, nothing will be written.", validSessions.Count);
+        else
+            _logger.LogInformation("Starting transaction sync for {Count} session(s).", validSessions.Count);
 
         var fireflyAccounts = await _firefly.GetAssetAccountsAsync(cancellationToken);
 
@@ -80,10 +83,10 @@ public sealed class TransactionSyncer
             await SyncSessionAsync(stored.SessionId, fireflyAccounts, today, cancellationToken);
         }
 
-        _logger.LogInformation("Transaction sync completed.");
+        _logger.LogInformation(_options.WhatIf ? "[WHATIF] Connected preview complete." : "Transaction sync completed.");
     }
 
-    private async Task DryRunSessionAsync(string sessionId, DateOnly today, CancellationToken ct)
+    private async Task OfflineWhatIfSessionAsync(string sessionId, DateOnly today, CancellationToken ct)
     {
         EnableBanking.Models.Session session;
         try
@@ -92,15 +95,15 @@ public sealed class TransactionSyncer
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[DRY RUN] Failed to fetch session {SessionId}.", sessionId);
+            _logger.LogError(ex, "[WHATIF] Failed to fetch session {SessionId}.", sessionId);
             return;
         }
 
         foreach (var accountUid in session.AccountUids)
-            await DryRunAccountAsync(accountUid, today, ct);
+            await OfflineWhatIfAccountAsync(accountUid, today, ct);
     }
 
-    private async Task DryRunAccountAsync(string accountUid, DateOnly today, CancellationToken ct)
+    private async Task OfflineWhatIfAccountAsync(string accountUid, DateOnly today, CancellationToken ct)
     {
         EnableBanking.Models.Account ebAccount;
         try
@@ -109,12 +112,12 @@ public sealed class TransactionSyncer
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[DRY RUN] Failed to fetch details for account {Uid}, skipping.", accountUid);
+            _logger.LogWarning(ex, "[WHATIF] Failed to fetch details for account {Uid}, skipping.", accountUid);
             return;
         }
 
-        var dateFrom = new DateOnly(2000, 1, 1); // fetch all available history in dry-run mode
-        _logger.LogInformation("[DRY RUN] Account {Uid} IBAN={Iban} — fetching {DateFrom} to {DateTo}.",
+        var dateFrom = new DateOnly(2000, 1, 1); // fetch all available history in offline preview mode
+        _logger.LogInformation("[WHATIF] Account {Uid} IBAN={Iban} — fetching {DateFrom} to {DateTo}.",
             accountUid, ebAccount.AccountId?.Iban, dateFrom, today);
 
         var transactions = await _enableBanking.GetTransactionsAsync(accountUid, dateFrom, today, ct);
@@ -126,11 +129,11 @@ public sealed class TransactionSyncer
         {
             var dir = string.Equals(tx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase) ? "CREDIT" : "DEBIT";
             var desc = tx.RemittanceInformation?.FirstOrDefault() ?? tx.EntryReference ?? "(no description)";
-            _logger.LogInformation("[DRY RUN]   {Date} {Dir} {Amount} {Currency} — {Desc}",
+            _logger.LogInformation("[WHATIF]   {Date} {Dir} {Amount} {Currency} — {Desc}",
                 tx.BookingDate ?? tx.ValueDate, dir, tx.TransactionAmount.Amount, tx.TransactionAmount.Currency, desc);
         }
 
-        _logger.LogInformation("[DRY RUN] Found {Count} booked transaction(s) for account {Uid}.", booked.Count, accountUid);
+        _logger.LogInformation("[WHATIF] Found {Count} booked transaction(s) for account {Uid}.", booked.Count, accountUid);
     }
 
     private async Task SyncSessionAsync(
@@ -179,6 +182,11 @@ public sealed class TransactionSyncer
 
         var (_, fireflyAccount) = matches[0];
 
+        if (_options.WhatIf)
+            _logger.LogInformation(
+                "[WHATIF] Account mapping: Enable Banking {Uid} (IBAN {Iban}) -> Firefly III {FfId} ({FfName}).",
+                accountUid, ebAccount.AccountId?.Iban, fireflyAccount.Id, fireflyAccount.Attributes.Name);
+
         var latestDate = await _firefly.GetLatestTransactionDateAsync(fireflyAccount.Id, cancellationToken);
         var dateFrom = latestDate.HasValue
             ? latestDate.Value.AddDays(-_options.LookbackDays)
@@ -190,6 +198,12 @@ public sealed class TransactionSyncer
             ebAccount.AccountId?.Iban,
             dateFrom,
             today);
+
+        if (_options.WhatIf)
+            _logger.LogInformation(
+                "[WHATIF] {Name}: computed cutoff date range {DateFrom} to {DateTo} (latest Firefly date: {Latest}).",
+                fireflyAccount.Attributes.Name, dateFrom, today,
+                latestDate.HasValue ? latestDate.Value.ToString() : "none");
 
         var ebTransactions = await _enableBanking.GetTransactionsAsync(
             accountUid, dateFrom, today, cancellationToken);
@@ -225,19 +239,38 @@ public sealed class TransactionSyncer
                 continue;
             }
 
+            var desc = ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)";
+            var txDate = ebTx.BookingDate ?? ebTx.ValueDate;
+
             if (existingExternalIds.Contains(externalId))
             {
+                if (_options.WhatIf)
+                    _logger.LogInformation(
+                        "[WHATIF] SKIP DUPLICATE: external_id={ExternalId} date={Date} amount={Amount} {Currency} — {Desc}",
+                        externalId, txDate, ebTx.TransactionAmount.Amount, ebTx.TransactionAmount.Currency, desc);
                 skipped++;
                 continue;
             }
 
             var store = BuildTransactionStore(ebTx, externalId, fireflyAccount);
+
+            if (_options.WhatIf)
+            {
+                _logger.LogInformation(
+                    "[WHATIF] WOULD IMPORT: external_id={ExternalId} date={Date} amount={Amount} {Currency} — {Desc}",
+                    externalId, txDate, ebTx.TransactionAmount.Amount, ebTx.TransactionAmount.Currency, desc);
+                created++;
+                continue;
+            }
+
             await _firefly.CreateTransactionAsync(store, cancellationToken);
             created++;
         }
 
         _logger.LogInformation(
-            "{Name}: created {Created}, skipped {Skipped} transactions.",
+            _options.WhatIf
+                ? "[WHATIF] {Name}: would create {Created}, would skip {Skipped} transactions."
+                : "{Name}: created {Created}, skipped {Skipped} transactions.",
             fireflyAccount.Attributes.Name, created, skipped);
     }
 

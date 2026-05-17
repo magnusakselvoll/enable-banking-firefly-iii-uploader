@@ -200,7 +200,7 @@ internal static class BankRegistrationEndpoints
         ILoggerFactory loggerFactory)
     {
         var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
-        var label = options.Value.DryRun ? "dry-run sync" : "sync";
+        var label = options.Value.WhatIf ? "what-if sync" : "sync";
         logger.LogInformation("Manual {Label} triggered via web UI.", label);
         _ = Task.Run(async () =>
         {

@@ -11,6 +11,7 @@ services:
       EnableBankingUploader__FireflyIiiToken: "${FIREFLY_TOKEN}"
       EnableBankingUploader__PublicBaseUrl: "${PUBLIC_BASE_URL}"
       EnableBankingUploader__Schedule: "${SCHEDULE:-0 18 * * *}"
+      # EnableBankingUploader__WhatIf: "false"  # true = preview only; if FireflyIiiUrl unset, runs fully offline (no Firefly contact)
       # SessionStorePath defaults to /data/sessions (mapped to the sessions volume below).
       # WebListenUrl defaults to http://0.0.0.0:8080; override if needed.
     volumes:
