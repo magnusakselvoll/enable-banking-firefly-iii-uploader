@@ -1,9 +1,15 @@
 # Enable Banking — Personal-Use Tier Reference
 
-> **Implementation notes** (from exploratory API testing):
+> **Implementation notes** (from exploratory API testing and official docs):
 > - JWT audience must be `api.enablebanking.com` (not `enablebanking.com`)
-> - `GET /sessions` returns 405 — there is no endpoint to list sessions. Session IDs must be provided explicitly in configuration (`EnableBankingUploader:EnableBankingSessionIds`).
-> - Dedup key: use `entry_reference` (falls back to `transaction_id` if absent). Only deduplicate `status=BOOK` transactions.
+> - `GET /sessions` returns 405 — there is no endpoint to list sessions.
+> - `session_id` values are **not** visible in the Enable Banking Control Panel.
+>   They are created programmatically via the auth flow (`POST /auth` → bank
+>   consent → `POST /sessions`) and obtained through this app's built-in bank
+>   registration web UI.
+> - Redirect URLs must be **`https://`** — Enable Banking rejects plain `http://`.
+> - Dedup key: use `entry_reference` (falls back to `transaction_id` if absent).
+>   Only deduplicate `status=BOOK` transactions.
 > - See [README.md](../README.md) for full configuration reference.
 
 Notes for the AIS-Restricted production application used to import
@@ -15,6 +21,31 @@ Sources: Enable Banking [Terms of Service](https://enablebanking.com/terms/)
 
 ---
 
+## How sessions are obtained
+
+A session represents one bank's consent (one end-user authorisation at one ASPSP).
+There is no way to look up session IDs from the Control Panel — they are created
+exclusively through the API auth flow and stored on disk by this application.
+
+**The 4-step flow (handled by this app's web UI):**
+
+1. `GET /aspsps` — retrieve the bank's exact `name` + `country` and its
+   `maximum_consent_validity` (days).
+2. `POST /auth` — body: `{ access:{valid_until}, aspsp:{name,country}, psu_type,
+   redirect_url, state }` → response: `{ url, authorization_id }`.
+   The `redirect_url` must be `<PublicBaseUrl>/callback` and must
+   be registered as a Redirect URL in the Enable Banking Control Panel first.
+   It must be `https://`.
+3. User opens `url`, authenticates at the bank, approves access → bank redirects
+   to `redirect_url?code=...&state=...`.
+4. `POST /sessions` — body: `{ code }` → response: `{ session_id, accounts:[{uid,...}],
+   aspsp, access:{valid_until} }`.
+
+This app performs these steps via its web UI (`/register` page), stores the
+result to `SessionStorePath`, and uses the `session_id` for all subsequent syncs.
+
+---
+
 ## Application configuration (template)
 
 | Field | Value |
@@ -22,14 +53,14 @@ Sources: Enable Banking [Terms of Service](https://enablebanking.com/terms/)
 | Status | Active |
 | Environment | PRODUCTION |
 | Services | Account Information (Restricted) |
-| Redirect URLs | _(your callback URL)_ |
+| Redirect URLs | `<PublicBaseUrl>/callback` (must be `https://`) |
 | Data protection email | _(your contact email)_ |
 | Privacy / ToS URL | _(your published policy URL)_ |
 
-**Note on redirect URLs:** if the callback is on a private hostname
-(Tailscale, VPN, LAN), the OAuth flow only works from devices currently
-on that network. For reconsent from outside, register a second redirect
-URL (e.g. localhost or a publicly reachable host).
+**Note on redirect URLs:** this app's callback is served at `<PublicBaseUrl>/callback`.
+The container itself listens on plain HTTP internally; TLS is provided by an
+external reverse proxy (e.g. Tailscale serve). Register the full HTTPS URL that
+the proxy exposes, e.g. `https://eb.my-tailnet.ts.net/callback`.
 
 **Note on privacy/ToS URL:** the URL must resolve and remain reachable.
 Even for a single-user setup, Enable Banking displays it during the
@@ -49,7 +80,7 @@ consent screen and may monitor its availability.
 3. **No write-capable endpoints exist** for an AIS-Restricted app. The
    available surface is:
    - `GET /aspsps` — list supported banks
-   - `POST /sessions`, `GET /sessions/{id}`, `DELETE /sessions/{id}`
+   - `POST /auth`, `POST /sessions`, `GET /sessions/{id}`, `DELETE /sessions/{id}`
    - `GET /accounts/{id}/balances`
    - `GET /accounts/{id}/transactions`
    - `GET /accounts/{id}/details`
@@ -105,8 +136,8 @@ Four independent mechanisms apply, layered:
 - Max value is per-ASPSP, returned in `maximum_consent_validity` from
   `GET /aspsps`.
 - **For most ASPSPs: 180 days.** Some still cap at 90.
-- No separate "refresh" flow — when consent expires, do a fresh
-  authorisation. Schedule a warning a week ahead.
+- No separate "refresh" flow — when consent expires, re-authorize via the
+  web UI. The session list shows expiry status. Schedule re-auth a week ahead.
 
 ### 2. Background vs. online fetches — **the limit that matters**
 
@@ -157,7 +188,7 @@ silently stripped. Link every account you want to import.
   Consumes 1 of the ~4 daily quota — leaves headroom for retries.
 - **No PSU headers** in the scheduled job (no user present).
 - **Reauthorise per ASPSP every ~150 days** with a buffer alarm a week
-  before `valid_until`.
+  before `valid_until`. The web UI shows expiry status.
 - **First sync:** `strategy=longest` to pull all available history.
 - **Subsequent syncs:** `strategy=default` (or omit), narrow date range.
 - **Dedup key:** `entry_reference` for booked transactions
@@ -172,7 +203,7 @@ silently stripped. Link every account you want to import.
 | Error | Response | Action |
 |---|---|---|
 | `ASPSP_RATE_LIMIT_EXCEEDED` | 429 | Back off 6 hours |
-| `EXPIRED_SESSION` | 401 | Trigger fresh consent flow (don't retry) |
+| `EXPIRED_SESSION` | 401 | Re-authorize via the web UI (don't retry) |
 | `ASPSP_ERROR` | varies | Exponential backoff: 1 min, 1 h, 2 h, 4 h |
 | `WRONG_TRANSACTIONS_PERIOD` | — | Requested date range unavailable; narrow it |
 | `PSU_HEADER_NOT_PROVIDED` | 422 | Either send *all* required PSU headers or *none* |
@@ -193,8 +224,9 @@ Handle `EXPIRED_SESSION` defensively:
 ## Quick API reference (AIS-Restricted surface)
 
 ```
-GET    /aspsps                                  # List supported banks
-POST   /sessions                                # Initiate auth (returns redirect URL)
+GET    /aspsps                                  # List supported banks + max consent validity
+POST   /auth                                    # Start consent flow (returns redirect URL)
+POST   /sessions                                # Exchange auth code for session_id
 GET    /sessions/{session_id}                   # Inspect session / check validity
 DELETE /sessions/{session_id}                   # Revoke consent
 GET    /accounts/{account_id}/details           # IBAN, holder, currency
@@ -206,7 +238,7 @@ GET    /accounts/{account_id}/transactions/{transaction_id}  # Extra details
 Auth header on every request:
 `Authorization: Bearer <JWT signed with your RSA private key>`
 
-JWT max TTL: 86 400 s (24 h).
+JWT max TTL: 86 400 s (24 h). JWT audience: `api.enablebanking.com`.
 
 ---
 
@@ -214,6 +246,7 @@ JWT max TTL: 86 400 s (24 h).
 
 - [Enable Banking docs home](https://enablebanking.com/docs/)
 - [API reference](https://enablebanking.com/docs/api/reference/)
+- [Quick start](https://enablebanking.com/docs/api/quick-start/)
 - [FAQ](https://enablebanking.com/docs/faq/)
 - [Terms of Service](https://enablebanking.com/terms/)
 - [Whitelisting own accounts](https://enablebanking.com/docs/api/linked-accounts/)

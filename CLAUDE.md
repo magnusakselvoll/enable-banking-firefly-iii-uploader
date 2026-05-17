@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This tool downloads transactions from Enable Banking and uploads them to Firefly III, running on a configurable schedule inside a Docker container.
+This tool downloads transactions from Enable Banking and uploads them to Firefly III on a configurable schedule. It runs as a long-lived Docker container with two concurrent concerns: a cron-based sync job and a bank management web UI for registering/revoking bank consents.
 
 ## Issue Tracking
 
@@ -59,11 +59,12 @@ dotnet build                                        # Build all projects
 dotnet test                                         # Run all tests
 dotnet test --filter "FullyQualifiedName~MyTest"    # Run a single test by name
 
-dotnet run --project src/EnableBankingUploader.Cli  # Run with default config
+dotnet run --project src/EnableBankingUploader.Cli  # Run (web UI on http://localhost:8080)
 
 # Override config via env vars (double underscore = section separator):
 EnableBankingUploader__FireflyIiiUrl=http://localhost:8080 \
   EnableBankingUploader__FireflyIiiToken=my-token \
+  EnableBankingUploader__PublicBaseUrl=https://eb.example.ts.net \
   dotnet run --project src/EnableBankingUploader.Cli
 ```
 
@@ -71,28 +72,34 @@ EnableBankingUploader__FireflyIiiUrl=http://localhost:8080 \
 
 Two-project layout:
 
-- **EnableBankingUploader.Core** (`src/EnableBankingUploader.Core/`): Enable Banking API client, Firefly III API client, account matching, transaction deduplication, retry logic. No dependency on the CLI.
-- **EnableBankingUploader.Cli** (`src/EnableBankingUploader.Cli/`): Console executable. Reads configuration, drives the sync loop, schedules execution.
+- **EnableBankingUploader.Core** (`src/EnableBankingUploader.Core/`): Enable Banking API client, Firefly III API client, account matching, transaction deduplication, retry logic, file-backed session store. No dependency on the CLI.
+- **EnableBankingUploader.Cli** (`src/EnableBankingUploader.Cli/`): ASP.NET Core web host (`Microsoft.NET.Sdk.Web`). Runs two things concurrently:
+  - `SyncScheduler` (a `BackgroundService`) — cron-driven transaction sync.
+  - Minimal API endpoints (`Web/BankRegistrationEndpoints.cs`) — bank management UI at `WebListenUrl`.
 
 See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for Enable Banking API notes, rate limits, acceptable use, and error handling guidance.
 
 ### Key design decisions (from issue #1)
 
+- **Session acquisition**: Enable Banking sessions are created via `POST /auth` → bank consent → `POST /sessions`. Session IDs do **not** appear in the Control Panel and cannot be configured manually. They are obtained through the web UI and stored on disk.
+- **Session storage**: one JSON file per session in `SessionStorePath`. The cron job reads sessions from disk; the web UI writes them. Access control for the UI relies on the network (e.g. Tailscale ACLs) rather than app-level auth.
+- **Redirect URL**: must be `https://` (Enable Banking rejects `http://`). The container serves plain HTTP internally; TLS is supplied by an external reverse proxy (Tailscale serve, nginx, etc.). `PublicBaseUrl` tells the app its external URL to construct `redirect_url = PublicBaseUrl + "/callback"`.
 - **Account matching**: normalize IBANs by removing spaces and separators before comparing Enable Banking accounts to Firefly III asset accounts.
 - **Query order**: query Firefly III first to determine the date range needed, minimizing Enable Banking API calls.
 - **Lookback window**: always include a one-day lookback when querying Enable Banking to catch late-arriving transactions.
 - **Deduplication**: use Enable Banking's unique transaction identifiers to skip transactions already present in Firefly III — safe to re-run without creating duplicates.
-- **Retry logic**: use Polly (or equivalent) for transient API failures on both Enable Banking and Firefly III calls.
+- **Retry logic**: use Polly for transient API failures on both Enable Banking and Firefly III calls.
 
 ## Tech Stack
 
 - **Language/Runtime**: C# / .NET 10
+- **Web host**: ASP.NET Core (`Microsoft.NET.Sdk.Web`, Kestrel, minimal APIs)
 - **HTTP clients**: Hand-written wrappers (`EnableBankingClient`, `FireflyIiiClient`)
 - **Retry**: Polly
 - **Configuration**: Microsoft.Extensions.Configuration (JSON + Environment Variables)
 - **Logging**: Microsoft.Extensions.Logging (console)
 - **Testing**: MSTest
-- **Deployment**: Docker via .NET SDK container publish (`dotnet publish -t:PublishContainer`) — no Dockerfile needed
+- **Deployment**: Docker via .NET SDK container publish (`dotnet publish -t:PublishContainer`) — no Dockerfile needed; uses the `aspnet` runtime base image
 
 ## Dependency Policy
 
@@ -114,9 +121,11 @@ Minimize external dependencies. Only add well-established, widely-used libraries
 |-----|---------|---------|-------------|
 | `EnableBankingUploader:EnableBankingApplicationId` | `EnableBankingUploader__EnableBankingApplicationId` | *(required)* | Enable Banking application UUID (used as JWT issuer/kid) |
 | `EnableBankingUploader:EnableBankingPrivateKeyPath` | `EnableBankingUploader__EnableBankingPrivateKeyPath` | *(required)* | Path to RSA private key PEM file for Enable Banking JWT signing |
-| `EnableBankingUploader:EnableBankingSessionIds:0` | `EnableBankingUploader__EnableBankingSessionIds__0` | *(required)* | Session IDs from Enable Banking Control Panel — one per bank consent. There is no API to list sessions; they must be configured explicitly. |
 | `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required)* | Base URL of the Firefly III instance |
 | `EnableBankingUploader:FireflyIiiToken` | `EnableBankingUploader__FireflyIiiToken` | *(required)* | Firefly III personal access token |
+| `EnableBankingUploader:PublicBaseUrl` | `EnableBankingUploader__PublicBaseUrl` | *(required for bank registration)* | External HTTPS base URL (e.g. `https://eb.my-tailnet.ts.net`). The redirect URL sent to Enable Banking is `<PublicBaseUrl>/callback` — register that exact URL in the Control Panel. |
+| `EnableBankingUploader:SessionStorePath` | `EnableBankingUploader__SessionStorePath` | `/data/sessions` | Directory where bank session files are stored. Map to a Docker volume to persist across restarts. |
+| `EnableBankingUploader:WebListenUrl` | `EnableBankingUploader__WebListenUrl` | `http://0.0.0.0:8080` | Internal Kestrel bind URL. |
 | `EnableBankingUploader:Schedule` | `EnableBankingUploader__Schedule` | `0 18 * * *` | Cron expression for sync schedule |
 | `EnableBankingUploader:LookbackDays` | `EnableBankingUploader__LookbackDays` | `1` | Extra days to look back for late-arriving transactions |
 
@@ -124,14 +133,13 @@ Place the RSA private key PEM file in the `secrets/` directory (gitignored). The
 
 ## Running via Docker Compose
 
+The container runs as a long-lived service (cron sync + bank management web UI):
+
 ```bash
-docker compose run --rm uploader
+docker compose up -d
 ```
 
-Example cron entry (runs daily at 18:00 via Docker):
-```cron
-0 18 * * * cd /path/to/enable-banking-firefly-iii-uploader && /usr/local/bin/docker compose run --rm uploader >> /var/log/eb-uploader.log 2>&1
-```
+Then open `<PublicBaseUrl>` in your browser to register banks. Sessions are persisted to the `sessions` Docker volume and survive container restarts.
 
 ## Idempotency
 

@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.FireflyIii;
 using EnableBankingUploader.Core.Options;
+using EnableBankingUploader.Core.Sessions;
 using EnableBankingUploader.Core.Sync;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -38,6 +39,7 @@ public static class ServiceCollectionExtensions
         })
         .AddResilienceHandler("fireflyiii", ConfigureResiliencePipeline);
 
+        services.AddSingleton<ISessionStore, FileSessionStore>();
         services.AddTransient<AccountMatcher>();
         services.AddTransient<TransactionSyncer>();
 

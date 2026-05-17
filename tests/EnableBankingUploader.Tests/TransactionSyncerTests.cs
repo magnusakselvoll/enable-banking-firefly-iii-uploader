@@ -2,6 +2,7 @@ using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.EnableBanking.Models;
 using EnableBankingUploader.Core.FireflyIii;
 using EnableBankingUploader.Core.Options;
+using EnableBankingUploader.Core.Sessions;
 using EnableBankingUploader.Core.Sync;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -22,6 +23,9 @@ public class TransactionSyncerTests
         new(AccountUid, new AccountIdentification(Iban), "Test", "NOK");
 
     private static Session Session() => new(SessionId, [AccountUid]);
+
+    private static StoredSession StoredSession() =>
+        new(SessionId, "TestBank", "FI", [AccountUid], DateTimeOffset.UtcNow.AddDays(180), DateTimeOffset.UtcNow);
 
     private static Core.FireflyIii.Models.Account FfAccount() =>
         new(FireflyAccountId, new Core.FireflyIii.Models.AccountAttributes(FireflyAccountName, "asset", Iban));
@@ -45,21 +49,29 @@ public class TransactionSyncerTests
             new Core.FireflyIii.Models.TransactionSplitAttributes(externalId, new DateOnly(2024, 1, 15), "100", "Test"),
         ]));
 
-    private static (TransactionSyncer, IEnableBankingClient, IFireflyIiiClient) CreateSyncer(int lookbackDays = 1)
+    private static (TransactionSyncer syncer, IEnableBankingClient eb, IFireflyIiiClient ff) CreateSyncer(
+        int lookbackDays = 1,
+        ISessionStore? store = null)
     {
         var eb = Substitute.For<IEnableBankingClient>();
         var ff = Substitute.For<IFireflyIiiClient>();
+
+        if (store is null)
+        {
+            store = Substitute.For<ISessionStore>();
+            store.ListAsync(default).Returns([StoredSession()]);
+        }
+
         var options = Options.Create(new SyncOptions
         {
             EnableBankingApplicationId = "app-id",
             EnableBankingPrivateKeyPath = "/fake/key.pem",
-            EnableBankingSessionIds = [SessionId],
             FireflyIiiUrl = "http://localhost",
             FireflyIiiToken = "token",
             LookbackDays = lookbackDays,
         });
         var matcher = new AccountMatcher(NullLogger<AccountMatcher>.Instance);
-        var syncer = new TransactionSyncer(eb, ff, matcher, options, NullLogger<TransactionSyncer>.Instance);
+        var syncer = new TransactionSyncer(eb, ff, store, matcher, options, NullLogger<TransactionSyncer>.Instance);
         return (syncer, eb, ff);
     }
 
@@ -79,21 +91,26 @@ public class TransactionSyncerTests
     }
 
     [TestMethod]
-    public async Task SyncAsync_NoSessionsConfigured_DoesNothing()
+    public async Task SyncAsync_NoSessionsInStore_DoesNothing()
     {
-        var eb = Substitute.For<IEnableBankingClient>();
-        var ff = Substitute.For<IFireflyIiiClient>();
-        var options = Options.Create(new SyncOptions
-        {
-            EnableBankingApplicationId = "app-id",
-            EnableBankingPrivateKeyPath = "/fake/key.pem",
-            EnableBankingSessionIds = [],
-            FireflyIiiUrl = "http://localhost",
-            FireflyIiiToken = "token",
-        });
-        var syncer = new TransactionSyncer(eb, ff,
-            new AccountMatcher(NullLogger<AccountMatcher>.Instance),
-            options, NullLogger<TransactionSyncer>.Instance);
+        var emptyStore = Substitute.For<ISessionStore>();
+        emptyStore.ListAsync(default).Returns([]);
+        var (syncer, _, ff) = CreateSyncer(store: emptyStore);
+
+        await syncer.SyncAsync();
+
+        await ff.DidNotReceive().GetAssetAccountsAsync(default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_ExpiredSession_IsSkipped()
+    {
+        var expiredStore = Substitute.For<ISessionStore>();
+        expiredStore.ListAsync(default).Returns([
+            new Core.Sessions.StoredSession(SessionId, "TestBank", "FI", [AccountUid],
+                DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(-91))
+        ]);
+        var (syncer, _, ff) = CreateSyncer(store: expiredStore);
 
         await syncer.SyncAsync();
 
@@ -200,7 +217,6 @@ public class TransactionSyncerTests
     public async Task SyncAsync_EntryReferenceUsedOverTransactionId()
     {
         var (syncer, eb, ff) = CreateSyncer();
-        // entry_reference differs from transaction_id — entry_reference should win
         SetupDefaults(eb, ff, ebTx: [EbTransaction(entryRef: "entry-ref-1", txId: "tx-id-1")]);
 
         await syncer.SyncAsync();

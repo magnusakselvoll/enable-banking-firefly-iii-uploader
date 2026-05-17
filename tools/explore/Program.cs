@@ -43,7 +43,7 @@ async Task<JsonElement> Call(string path)
 if (sessionId == null)
 {
     Console.WriteLine("Usage: dotnet run --project tools/explore -- <session-id>");
-    Console.WriteLine("Find your session IDs in the Enable Banking Control Panel.");
+    Console.WriteLine("Session IDs are created via the bank registration web UI (open <PublicBaseUrl> in your browser).");
     return;
 }
 

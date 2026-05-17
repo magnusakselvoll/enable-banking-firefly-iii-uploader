@@ -2,6 +2,7 @@ using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.FireflyIii;
 using EnableBankingUploader.Core.FireflyIii.Models;
 using EnableBankingUploader.Core.Options;
+using EnableBankingUploader.Core.Sessions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -13,6 +14,7 @@ public sealed class TransactionSyncer
 
     private readonly IEnableBankingClient _enableBanking;
     private readonly IFireflyIiiClient _firefly;
+    private readonly ISessionStore _sessionStore;
     private readonly AccountMatcher _accountMatcher;
     private readonly SyncOptions _options;
     private readonly ILogger<TransactionSyncer> _logger;
@@ -20,12 +22,14 @@ public sealed class TransactionSyncer
     public TransactionSyncer(
         IEnableBankingClient enableBanking,
         IFireflyIiiClient firefly,
+        ISessionStore sessionStore,
         AccountMatcher accountMatcher,
         IOptions<SyncOptions> options,
         ILogger<TransactionSyncer> logger)
     {
         _enableBanking = enableBanking;
         _firefly = firefly;
+        _sessionStore = sessionStore;
         _accountMatcher = accountMatcher;
         _options = options.Value;
         _logger = logger;
@@ -33,20 +37,37 @@ public sealed class TransactionSyncer
 
     public async Task SyncAsync(CancellationToken cancellationToken = default)
     {
-        if (_options.EnableBankingSessionIds.Count == 0)
+        var allSessions = await _sessionStore.ListAsync(cancellationToken);
+        if (allSessions.Count == 0)
         {
-            _logger.LogWarning("No Enable Banking session IDs configured. Nothing to sync.");
+            _logger.LogWarning("No bank sessions registered. Register banks via the web UI.");
             return;
         }
 
-        _logger.LogInformation("Starting transaction sync for {Count} session(s).", _options.EnableBankingSessionIds.Count);
+        var now = DateTimeOffset.UtcNow;
+        var validSessions = allSessions.Where(s => s.ValidUntil >= now).ToList();
+
+        foreach (var expired in allSessions.Where(s => s.ValidUntil < now))
+        {
+            _logger.LogWarning(
+                "Session for {Bank} expired at {ValidUntil}. Re-authorize via the web UI.",
+                expired.AspspName, expired.ValidUntil);
+        }
+
+        if (validSessions.Count == 0)
+        {
+            _logger.LogWarning("All registered sessions are expired. Re-authorize banks via the web UI.");
+            return;
+        }
+
+        _logger.LogInformation("Starting transaction sync for {Count} session(s).", validSessions.Count);
 
         var fireflyAccounts = await _firefly.GetAssetAccountsAsync(cancellationToken);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        foreach (var sessionId in _options.EnableBankingSessionIds)
+        foreach (var stored in validSessions)
         {
-            await SyncSessionAsync(sessionId, fireflyAccounts, today, cancellationToken);
+            await SyncSessionAsync(stored.SessionId, fireflyAccounts, today, cancellationToken);
         }
 
         _logger.LogInformation("Transaction sync completed.");
@@ -65,7 +86,7 @@ public sealed class TransactionSyncer
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to fetch session {SessionId}. It may be expired — re-authorise in the Enable Banking Control Panel.", sessionId);
+            _logger.LogError(ex, "Failed to fetch session {SessionId}. It may be expired — re-authorize via the web UI.", sessionId);
             return;
         }
 

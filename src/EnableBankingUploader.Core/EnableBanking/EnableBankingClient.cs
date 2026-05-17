@@ -21,6 +21,54 @@ public sealed class EnableBankingClient : IEnableBankingClient
         _logger = logger;
     }
 
+    public async Task<IReadOnlyList<Aspsp>> ListAspspsAsync(
+        string? country = null,
+        CancellationToken cancellationToken = default)
+    {
+        var url = country is null ? "aspsps" : $"aspsps?country={Uri.EscapeDataString(country)}";
+        var response = await _httpClient.GetFromJsonAsync<AspspsResponse>(url, JsonOptions, cancellationToken)
+            ?? throw new InvalidOperationException("Enable Banking returned null response for aspsps.");
+        return response.Aspsps;
+    }
+
+    public async Task<AuthResponse> StartAuthorizationAsync(
+        AuthRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var httpResponse = await _httpClient.PostAsJsonAsync("auth", request, JsonOptions, cancellationToken);
+        if (!httpResponse.IsSuccessStatusCode)
+        {
+            var body = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                $"Enable Banking POST /auth returned {(int)httpResponse.StatusCode}: {body}");
+        }
+        return await httpResponse.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions, cancellationToken)
+            ?? throw new InvalidOperationException("Enable Banking returned null response for POST /auth.");
+    }
+
+    public async Task<AuthorizedSession> CreateSessionAsync(
+        string code,
+        CancellationToken cancellationToken = default)
+    {
+        var httpResponse = await _httpClient.PostAsJsonAsync(
+            "sessions", new CreateSessionRequest(code), JsonOptions, cancellationToken);
+        if (!httpResponse.IsSuccessStatusCode)
+        {
+            var body = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                $"Enable Banking POST /sessions returned {(int)httpResponse.StatusCode}: {body}");
+        }
+        return await httpResponse.Content.ReadFromJsonAsync<AuthorizedSession>(JsonOptions, cancellationToken)
+            ?? throw new InvalidOperationException("Enable Banking returned null response for POST /sessions.");
+    }
+
+    public async Task RevokeSessionAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.DeleteAsync($"sessions/{sessionId}", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            _logger.LogWarning("Revoking session {SessionId} returned {Status}.", sessionId, (int)response.StatusCode);
+    }
+
     public async Task<Session> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default)
     {
         return await _httpClient.GetFromJsonAsync<Session>(

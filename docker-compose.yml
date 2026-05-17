@@ -1,19 +1,26 @@
 services:
   uploader:
     image: ghcr.io/magnusakselvoll/enable-banking-firefly-iii-uploader:latest
-    restart: "no"
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       EnableBankingUploader__EnableBankingApplicationId: "${EB_APPLICATION_ID}"
       EnableBankingUploader__EnableBankingPrivateKeyPath: "/run/secrets/eb_private_key"
-      EnableBankingUploader__EnableBankingSessionIds__0: "${EB_SESSION_ID_0}"
-      # Add __1, __2 etc. for additional bank sessions
       EnableBankingUploader__FireflyIiiUrl: "${FIREFLY_URL}"
       EnableBankingUploader__FireflyIiiToken: "${FIREFLY_TOKEN}"
+      EnableBankingUploader__PublicBaseUrl: "${PUBLIC_BASE_URL}"
       EnableBankingUploader__Schedule: "${SCHEDULE:-0 18 * * *}"
+      # SessionStorePath defaults to /data/sessions (mapped to the sessions volume below).
+      # WebListenUrl defaults to http://0.0.0.0:8080; override if needed.
     volumes:
       - ./secrets/enablebanking.pem:/run/secrets/eb_private_key:ro
+      - sessions:/data/sessions
     networks:
       - firefly_iii
+
+volumes:
+  sessions:
 
 networks:
   firefly_iii:

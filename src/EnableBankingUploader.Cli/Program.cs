@@ -1,31 +1,23 @@
 using EnableBankingUploader.Core;
 using EnableBankingUploader.Cli;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
+using EnableBankingUploader.Cli.Web;
 
-var configuration = new ConfigurationBuilder()
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Configuration
     .AddJsonFile("appsettings.json", optional: false)
-    .AddEnvironmentVariables()
-    .Build();
+    .AddEnvironmentVariables();
 
-var services = new ServiceCollection();
-services.AddLogging(logging =>
-{
-    logging.AddConsole();
-    logging.SetMinimumLevel(LogLevel.Information);
-});
-services.AddEnableBankingUploader(configuration);
-services.AddTransient<SyncScheduler>();
+var listenUrl = builder.Configuration.GetSection("EnableBankingUploader")["WebListenUrl"]
+    ?? "http://0.0.0.0:8080";
+builder.WebHost.UseUrls(listenUrl);
 
-var provider = services.BuildServiceProvider();
+builder.Services.AddEnableBankingUploader(builder.Configuration);
+builder.Services.AddHostedService<SyncScheduler>();
+builder.Services.AddSingleton<BankRegistrationState>();
 
-using var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    cts.Cancel();
-};
+var app = builder.Build();
 
-var scheduler = provider.GetRequiredService<SyncScheduler>();
-await scheduler.RunAsync(cts.Token);
+BankRegistrationEndpoints.Map(app);
+
+await app.RunAsync();

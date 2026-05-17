@@ -1,12 +1,13 @@
 using Cronos;
 using EnableBankingUploader.Core.Options;
 using EnableBankingUploader.Core.Sync;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace EnableBankingUploader.Cli;
 
-internal sealed class SyncScheduler
+internal sealed class SyncScheduler : BackgroundService
 {
     private readonly TransactionSyncer _syncer;
     private readonly SyncOptions _options;
@@ -22,13 +23,13 @@ internal sealed class SyncScheduler
         _logger = logger;
     }
 
-    public async Task RunAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var expression = CronExpression.Parse(_options.Schedule);
 
         _logger.LogInformation("Scheduler started. Schedule: {Schedule}", _options.Schedule);
 
-        while (!cancellationToken.IsCancellationRequested)
+        while (!stoppingToken.IsCancellationRequested)
         {
             var now = DateTimeOffset.UtcNow;
             var next = expression.GetNextOccurrence(now, TimeZoneInfo.Utc);
@@ -41,12 +42,12 @@ internal sealed class SyncScheduler
             var delay = next.Value - now;
             _logger.LogInformation("Next sync scheduled at {Next} (in {Delay:hh\\:mm\\:ss}).", next.Value, delay);
 
-            await Task.Delay(delay, cancellationToken);
+            await Task.Delay(delay, stoppingToken);
 
             _logger.LogInformation("Starting scheduled sync.");
             try
             {
-                await _syncer.SyncAsync(cancellationToken);
+                await _syncer.SyncAsync(stoppingToken);
             }
             catch (OperationCanceledException)
             {
