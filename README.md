@@ -96,10 +96,12 @@ The web UI is available at `http://localhost:8080` when running locally (set `En
 
 The project uses the .NET SDK's built-in container support — no Dockerfile needed.
 
+Releases are published automatically: push a `vX.Y.Z` tag and the [Release workflow](.github/workflows/release.yml) builds and pushes both a versioned tag and `:latest` to `ghcr.io/magnusakselvoll/enable-banking-firefly-iii-uploader`.
+
 ```bash
-# Build and push to ghcr.io
-dotnet publish src/EnableBankingUploader.Cli -c Release -t:PublishContainer
+# Build and push to ghcr.io manually
+dotnet publish src/EnableBankingUploader.Cli -c Release -t:PublishContainer -p:ContainerRegistry=ghcr.io
 
 # Build locally (without pushing)
-dotnet publish src/EnableBankingUploader.Cli -c Release -t:PublishContainer -p:ContainerRegistry=
+dotnet publish src/EnableBankingUploader.Cli -c Release -t:PublishContainer
 ```
