@@ -26,13 +26,55 @@ internal static class BankRegistrationEndpoints
 
     private static async Task<IResult> IndexAsync(
         ISessionStore store,
+        IEnableBankingClient client,
+        ILoggerFactory loggerFactory,
         HttpContext ctx,
         CancellationToken ct)
     {
         var sessions = await store.ListAsync(ct);
+        var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
+        sessions = await EnsureIbansAsync(store, client, sessions, logger, ct);
         var banner = ctx.Request.Query["msg"].FirstOrDefault();
         var isError = ctx.Request.Query["err"].FirstOrDefault() == "1";
         return Results.Content(Html.Index(sessions, banner, isError), "text/html");
+    }
+
+    internal static async Task<IReadOnlyList<StoredSession>> EnsureIbansAsync(
+        ISessionStore store,
+        IEnableBankingClient client,
+        IReadOnlyList<StoredSession> sessions,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var result = new List<StoredSession>(sessions.Count);
+        foreach (var session in sessions)
+        {
+            if (session.Accounts is not null)
+            {
+                result.Add(session);
+                continue;
+            }
+
+            try
+            {
+                var accounts = new List<StoredAccount>(session.AccountUids.Count);
+                foreach (var uid in session.AccountUids)
+                {
+                    var account = await client.GetAccountAsync(uid, ct);
+                    accounts.Add(new StoredAccount(uid, account.AccountId?.Iban));
+                }
+
+                var updated = session with { Accounts = accounts };
+                await store.SaveAsync(updated, ct);
+                result.Add(updated);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to backfill IBANs for session {SessionId}; will retry next page load.", session.SessionId);
+                result.Add(session);
+            }
+        }
+        return result;
     }
 
     private static async Task<IResult> RegisterFormAsync(
@@ -183,7 +225,8 @@ internal static class BankRegistrationEndpoints
             AspspCountry: session.Aspsp?.Country ?? pending.AspspCountry,
             AccountUids: session.Accounts.Select(a => a.Uid).ToList(),
             ValidUntil: session.Access?.ValidUntil ?? DateTimeOffset.UtcNow.AddDays(90),
-            CreatedAt: DateTimeOffset.UtcNow);
+            CreatedAt: DateTimeOffset.UtcNow,
+            Accounts: session.Accounts.Select(a => new StoredAccount(a.Uid, a.AccountId?.Iban)).ToList());
 
         await store.SaveAsync(stored, ct);
 
