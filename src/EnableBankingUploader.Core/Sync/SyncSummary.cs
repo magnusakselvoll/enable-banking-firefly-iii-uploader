@@ -2,6 +2,7 @@ namespace EnableBankingUploader.Core.Sync;
 
 public sealed class SyncSummary
 {
+    public required string RunLabel { get; init; }
     public int ValidSessions { get; set; }
     public int ExpiredSessions { get; set; }
     public int SessionFetchErrors { get; set; }

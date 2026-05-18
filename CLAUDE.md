@@ -88,6 +88,7 @@ See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for E
 - **Query order**: query Firefly III first to determine the date range needed, minimizing Enable Banking API calls.
 - **Lookback window**: always include a one-day lookback when querying Enable Banking to catch late-arriving transactions.
 - **Deduplication**: use Enable Banking's unique transaction identifiers to skip transactions already present in Firefly III — safe to re-run without creating duplicates.
+- **Run labels**: each sync run generates a Firefly III tag (`eb-sync-<UTC timestamp>`, e.g. `eb-sync-2026-05-18T18:00:00Z`) and stamps it on every transaction created in that run. The label is also logged in the end-of-run summary. Prefix is hardcoded; no config key.
 - **Retry logic**: use Polly for transient API failures on both Enable Banking and Firefly III calls.
 
 ## Tech Stack
