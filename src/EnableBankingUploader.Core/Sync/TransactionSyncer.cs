@@ -35,13 +35,15 @@ public sealed class TransactionSyncer
         _logger = logger;
     }
 
-    public async Task SyncAsync(CancellationToken cancellationToken = default)
+    public async Task<SyncSummary> SyncAsync(CancellationToken cancellationToken = default)
     {
+        var summary = new SyncSummary();
+
         var allSessions = await _sessionStore.ListAsync(cancellationToken);
         if (allSessions.Count == 0)
         {
             _logger.LogWarning("No bank sessions registered. Register banks via the web UI.");
-            return;
+            return summary;
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -52,12 +54,15 @@ public sealed class TransactionSyncer
             _logger.LogWarning(
                 "Session for {Bank} expired at {ValidUntil}. Re-authorize via the web UI.",
                 expired.AspspName, expired.ValidUntil);
+            summary.ExpiredSessions++;
         }
+
+        summary.ValidSessions = validSessions.Count;
 
         if (validSessions.Count == 0)
         {
             _logger.LogWarning("All registered sessions are expired. Re-authorize banks via the web UI.");
-            return;
+            return summary;
         }
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -66,9 +71,11 @@ public sealed class TransactionSyncer
         {
             _logger.LogInformation("[WHATIF] No Firefly III URL configured — running offline preview for {Count} session(s). Nothing will be written.", validSessions.Count);
             foreach (var stored in validSessions)
-                await OfflineWhatIfSessionAsync(stored.SessionId, today, cancellationToken);
-            _logger.LogInformation("[WHATIF] Offline preview complete.");
-            return;
+                await OfflineWhatIfSessionAsync(stored.SessionId, today, summary, cancellationToken);
+            _logger.LogInformation(
+                "[WHATIF] Offline preview summary: {Sessions} session(s), {Accounts} account(s), {Booked} booked transaction(s) found.",
+                summary.ValidSessions, summary.OfflineAccounts, summary.OfflineBookedFound);
+            return summary;
         }
 
         if (_options.WhatIf)
@@ -80,13 +87,26 @@ public sealed class TransactionSyncer
 
         foreach (var stored in validSessions)
         {
-            await SyncSessionAsync(stored.SessionId, fireflyAccounts, today, cancellationToken);
+            await SyncSessionAsync(stored.SessionId, fireflyAccounts, today, summary, cancellationToken);
         }
 
-        _logger.LogInformation(_options.WhatIf ? "[WHATIF] Connected preview complete." : "Transaction sync completed.");
+        if (_options.WhatIf)
+            _logger.LogInformation(
+                "[WHATIF] Summary: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
+                "{Created} would create, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
+                summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
+                summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
+        else
+            _logger.LogInformation(
+                "Sync summary: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
+                "{Created} created, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
+                summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
+                summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
+
+        return summary;
     }
 
-    private async Task OfflineWhatIfSessionAsync(string sessionId, DateOnly today, CancellationToken ct)
+    private async Task OfflineWhatIfSessionAsync(string sessionId, DateOnly today, SyncSummary summary, CancellationToken ct)
     {
         EnableBanking.Models.Session session;
         try
@@ -96,14 +116,15 @@ public sealed class TransactionSyncer
         catch (Exception ex)
         {
             _logger.LogError(ex, "[WHATIF] Failed to fetch session {SessionId}.", sessionId);
+            summary.SessionFetchErrors++;
             return;
         }
 
         foreach (var accountUid in session.AccountUids)
-            await OfflineWhatIfAccountAsync(accountUid, today, ct);
+            await OfflineWhatIfAccountAsync(accountUid, today, summary, ct);
     }
 
-    private async Task OfflineWhatIfAccountAsync(string accountUid, DateOnly today, CancellationToken ct)
+    private async Task OfflineWhatIfAccountAsync(string accountUid, DateOnly today, SyncSummary summary, CancellationToken ct)
     {
         EnableBanking.Models.Account ebAccount;
         try
@@ -115,6 +136,8 @@ public sealed class TransactionSyncer
             _logger.LogWarning(ex, "[WHATIF] Failed to fetch details for account {Uid}, skipping.", accountUid);
             return;
         }
+
+        summary.OfflineAccounts++;
 
         var dateFrom = new DateOnly(2000, 1, 1); // fetch all available history in offline preview mode
         _logger.LogInformation("[WHATIF] Account {Uid} IBAN={Iban} — fetching {DateFrom} to {DateTo}.",
@@ -133,6 +156,7 @@ public sealed class TransactionSyncer
                 tx.BookingDate ?? tx.ValueDate, dir, tx.TransactionAmount.Amount, tx.TransactionAmount.Currency, desc);
         }
 
+        summary.OfflineBookedFound += booked.Count;
         _logger.LogInformation("[WHATIF] Found {Count} booked transaction(s) for account {Uid}.", booked.Count, accountUid);
     }
 
@@ -140,6 +164,7 @@ public sealed class TransactionSyncer
         string sessionId,
         IReadOnlyList<FireflyIii.Models.Account> fireflyAccounts,
         DateOnly today,
+        SyncSummary summary,
         CancellationToken cancellationToken)
     {
         EnableBanking.Models.Session session;
@@ -150,12 +175,13 @@ public sealed class TransactionSyncer
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to fetch session {SessionId}. It may be expired — re-authorize via the web UI.", sessionId);
+            summary.SessionFetchErrors++;
             return;
         }
 
         foreach (var accountUid in session.AccountUids)
         {
-            await SyncAccountAsync(accountUid, fireflyAccounts, today, cancellationToken);
+            await SyncAccountAsync(accountUid, fireflyAccounts, today, summary, cancellationToken);
         }
     }
 
@@ -163,6 +189,7 @@ public sealed class TransactionSyncer
         string accountUid,
         IReadOnlyList<FireflyIii.Models.Account> fireflyAccounts,
         DateOnly today,
+        SyncSummary summary,
         CancellationToken cancellationToken)
     {
         EnableBanking.Models.Account ebAccount;
@@ -173,13 +200,18 @@ public sealed class TransactionSyncer
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to fetch details for Enable Banking account {Uid}, skipping.", accountUid);
+            summary.AccountFetchErrors++;
             return;
         }
 
         var matches = _accountMatcher.MatchAccounts([ebAccount], fireflyAccounts);
         if (matches.Count == 0)
+        {
+            summary.UnmappedAccounts++;
             return;
+        }
 
+        summary.MappedAccounts++;
         var (_, fireflyAccount) = matches[0];
 
         if (_options.WhatIf)
@@ -227,6 +259,7 @@ public sealed class TransactionSyncer
             {
                 _logger.LogDebug("Skipping non-booked transaction (status={Status}).", ebTx.Status);
                 skipped++;
+                summary.SkippedNonBooked++;
                 continue;
             }
 
@@ -236,6 +269,7 @@ public sealed class TransactionSyncer
             {
                 _logger.LogWarning("Booked transaction has no entry_reference or transaction_id on account {Uid}, skipping.", accountUid);
                 skipped++;
+                summary.SkippedNoId++;
                 continue;
             }
 
@@ -249,6 +283,7 @@ public sealed class TransactionSyncer
                         "[WHATIF] SKIP DUPLICATE: external_id={ExternalId} date={Date} amount={Amount} {Currency} — {Desc}",
                         externalId, txDate, ebTx.TransactionAmount.Amount, ebTx.TransactionAmount.Currency, desc);
                 skipped++;
+                summary.SkippedDuplicate++;
                 continue;
             }
 
@@ -260,11 +295,13 @@ public sealed class TransactionSyncer
                     "[WHATIF] WOULD IMPORT: external_id={ExternalId} date={Date} amount={Amount} {Currency} — {Desc}",
                     externalId, txDate, ebTx.TransactionAmount.Amount, ebTx.TransactionAmount.Currency, desc);
                 created++;
+                summary.Created++;
                 continue;
             }
 
             await _firefly.CreateTransactionAsync(store, cancellationToken);
             created++;
+            summary.Created++;
         }
 
         _logger.LogInformation(
