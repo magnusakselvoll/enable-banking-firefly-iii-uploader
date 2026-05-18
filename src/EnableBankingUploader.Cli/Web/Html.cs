@@ -66,7 +66,9 @@ internal static class Html
             foreach (var s in sessions)
             {
                 var (badgeClass, label) = BadgeFor(s.ValidUntil);
-                var accounts = string.Join(", ", s.AccountUids);
+                var accounts = s.Accounts is not null
+                    ? string.Join(", ", s.Accounts.Select(a => !string.IsNullOrEmpty(a.Iban) ? a.Iban : a.Uid))
+                    : string.Join(", ", s.AccountUids);
                 sb.Append(
                     $"<tr>" +
                     $"<td>{Encode(s.AspspName)}</td>" +

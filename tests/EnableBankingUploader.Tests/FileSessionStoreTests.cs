@@ -147,4 +147,63 @@ public class FileSessionStoreTests
         // GetPath validates synchronously before returning a Task, so the exception propagates directly
         Assert.ThrowsExactly<ArgumentException>(() => store.GetAsync("../escape"));
     }
+
+    [TestMethod]
+    public async Task SaveAndList_WithAccounts_RoundTrips()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        try
+        {
+            var store = CreateStore(dir);
+            var session = new StoredSession("s-iban", "TestBank", "FI", ["uid-1"],
+                new DateTimeOffset(2026, 12, 31, 0, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+                Accounts: [new StoredAccount("uid-1", "NO9386011117947")]);
+            await store.SaveAsync(session);
+
+            var result = await store.ListAsync();
+            Assert.HasCount(1, result);
+            Assert.IsNotNull(result[0].Accounts);
+            Assert.HasCount(1, result[0].Accounts!);
+            Assert.AreEqual("uid-1", result[0].Accounts![0].Uid);
+            Assert.AreEqual("NO9386011117947", result[0].Accounts![0].Iban);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ListAsync_OldJsonWithoutAccountsField_AccountsIsNull()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            // Old-format JSON: has accountUids but no accounts field
+            var oldJson = """
+                {
+                  "sessionId": "old-session",
+                  "aspspName": "LegacyBank",
+                  "aspspCountry": "FI",
+                  "accountUids": ["uid-x", "uid-y"],
+                  "validUntil": "2026-12-31T00:00:00+00:00",
+                  "createdAt": "2026-01-01T00:00:00+00:00"
+                }
+                """;
+            await File.WriteAllTextAsync(Path.Combine(dir, "old-session.json"), oldJson);
+            var store = CreateStore(dir);
+
+            var result = await store.ListAsync();
+            Assert.HasCount(1, result);
+            Assert.AreEqual("old-session", result[0].SessionId);
+            Assert.HasCount(2, result[0].AccountUids);
+            Assert.IsNull(result[0].Accounts);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

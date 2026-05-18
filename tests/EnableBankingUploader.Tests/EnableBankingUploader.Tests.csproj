@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnableBankingUploader.Core\EnableBankingUploader.Core.csproj" />
+    <ProjectReference Include="..\..\src\EnableBankingUploader.Cli\EnableBankingUploader.Cli.csproj" />
   </ItemGroup>
 
 </Project>
