@@ -11,7 +11,7 @@ bin/
 /secrets/
 
 # Local dev session store
-/sessions-dev/
+sessions-dev/
 
 # Rider
 *.sln.iml
