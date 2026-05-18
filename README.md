@@ -17,13 +17,14 @@ All settings are supplied via environment variables. Place your RSA private key 
 |---|---|---|---|
 | `EnableBankingUploader__EnableBankingApplicationId` | yes | — | Enable Banking application UUID |
 | `EnableBankingUploader__EnableBankingPrivateKeyPath` | yes | — | Path to RSA private key PEM inside container |
-| `EnableBankingUploader__FireflyIiiUrl` | yes | — | Base URL of Firefly III (e.g. `http://firefly:8080`) |
+| `EnableBankingUploader__FireflyIiiUrl` | yes (unless WhatIf offline) | — | Base URL of Firefly III (e.g. `http://firefly:8080`) |
 | `EnableBankingUploader__FireflyIiiToken` | yes | — | Firefly III personal access token |
 | `EnableBankingUploader__PublicBaseUrl` | yes | — | External HTTPS base URL (e.g. `https://eb.my-tailnet.ts.net`) — used to construct the Enable Banking redirect URL |
 | `EnableBankingUploader__SessionStorePath` | no | `/data/sessions` | Directory where bank session files are stored (map to a volume) |
 | `EnableBankingUploader__WebListenUrl` | no | `http://0.0.0.0:8080` | Internal Kestrel bind URL |
 | `EnableBankingUploader__Schedule` | no | `0 18 * * *` | Cron expression (UTC) for the sync schedule |
 | `EnableBankingUploader__LookbackDays` | no | `1` | Extra days to look back for late-arriving transactions |
+| `EnableBankingUploader__WhatIf` | no | `false` | Preview mode — no writes. With `FireflyIiiUrl` set: reads Firefly for account matching, cutoff date, and dedup, then logs each transaction as `WOULD IMPORT` or `SKIP DUPLICATE`. Without `FireflyIiiUrl`: fully offline — fetches all Enable Banking history and logs it, no Firefly contact. |
 
 ## Bank registration — first-time setup
 

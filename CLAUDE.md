@@ -121,13 +121,14 @@ Minimize external dependencies. Only add well-established, widely-used libraries
 |-----|---------|---------|-------------|
 | `EnableBankingUploader:EnableBankingApplicationId` | `EnableBankingUploader__EnableBankingApplicationId` | *(required)* | Enable Banking application UUID (used as JWT issuer/kid) |
 | `EnableBankingUploader:EnableBankingPrivateKeyPath` | `EnableBankingUploader__EnableBankingPrivateKeyPath` | *(required)* | Path to RSA private key PEM file for Enable Banking JWT signing |
-| `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required)* | Base URL of the Firefly III instance |
+| `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required unless WhatIf offline)* | Base URL of the Firefly III instance |
 | `EnableBankingUploader:FireflyIiiToken` | `EnableBankingUploader__FireflyIiiToken` | *(required)* | Firefly III personal access token |
 | `EnableBankingUploader:PublicBaseUrl` | `EnableBankingUploader__PublicBaseUrl` | *(required for bank registration)* | External HTTPS base URL (e.g. `https://eb.my-tailnet.ts.net`). The redirect URL sent to Enable Banking is `<PublicBaseUrl>/callback` — register that exact URL in the Control Panel. |
 | `EnableBankingUploader:SessionStorePath` | `EnableBankingUploader__SessionStorePath` | `/data/sessions` | Directory where bank session files are stored. Map to a Docker volume to persist across restarts. |
 | `EnableBankingUploader:WebListenUrl` | `EnableBankingUploader__WebListenUrl` | `http://0.0.0.0:8080` | Internal Kestrel bind URL. |
 | `EnableBankingUploader:Schedule` | `EnableBankingUploader__Schedule` | `0 18 * * *` | Cron expression for sync schedule |
 | `EnableBankingUploader:LookbackDays` | `EnableBankingUploader__LookbackDays` | `1` | Extra days to look back for late-arriving transactions |
+| `EnableBankingUploader:WhatIf` | `EnableBankingUploader__WhatIf` | `false` | Preview mode — no writes. With `FireflyIiiUrl` set: reads Firefly for account mapping, cutoff date, and dedup, then logs `[WHATIF] WOULD IMPORT` / `[WHATIF] SKIP DUPLICATE` per transaction. Without `FireflyIiiUrl`: fully offline — fetches Enable Banking history from `2000-01-01` and logs each booked transaction, no Firefly contact. |
 
 Place the RSA private key PEM file in the `secrets/` directory (gitignored). The `docker-compose.yml` mounts `./secrets/enablebanking.pem` into the container at the configured path.
 
