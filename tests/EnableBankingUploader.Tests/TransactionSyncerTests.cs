@@ -271,8 +271,32 @@ public class TransactionSyncerTests
             ebTx: [EbTransaction(entryRef: "dup"), EbTransaction(entryRef: "new", txId: "tx-2")],
             ffTx: [FfTransaction("dup")]);
 
-        await syncer.SyncAsync();
+        var summary = await syncer.SyncAsync();
 
+        await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
+        Assert.AreEqual(1, summary.MappedAccounts);
+        Assert.AreEqual(0, summary.UnmappedAccounts);
+        Assert.AreEqual(1, summary.Created);
+        Assert.AreEqual(1, summary.SkippedDuplicate);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_UnmappedAccount_CountedInSummary()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        eb.GetSessionAsync(SessionId, default).Returns(Session());
+        // EB account has an IBAN that doesn't exist in Firefly
+        eb.GetAccountAsync(AccountUid, default).Returns(
+            new Core.EnableBanking.Models.Account(AccountUid,
+                new Core.EnableBanking.Models.AccountIdentification("SE0000000000000"),
+                "Test", "SEK"));
+        ff.GetAssetAccountsAsync(default).Returns([FfAccount()]);
+
+        var summary = await syncer.SyncAsync();
+
+        Assert.AreEqual(0, summary.MappedAccounts);
+        Assert.AreEqual(1, summary.UnmappedAccounts);
+        Assert.AreEqual(0, summary.Created);
         await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
     }
 }

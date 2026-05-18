@@ -10,6 +10,7 @@ public sealed class FireflyIiiClient : IFireflyIiiClient
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        Converters = { new LenientDateOnlyConverter() },
     };
 
     private readonly HttpClient _httpClient;
