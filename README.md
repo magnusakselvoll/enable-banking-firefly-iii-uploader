@@ -83,6 +83,10 @@ Accounts are matched by IBAN between Enable Banking and Firefly III. Spaces and 
 
 Enable Banking's unique transaction identifiers are stored as `external_id` on Firefly III transactions. Re-running the tool over the same date range never creates duplicates.
 
+## Run labels
+
+Every sync run stamps each transaction it creates with a Firefly III tag of the form `eb-sync-2026-05-18T18:00:00Z` (the UTC start time of that run). If a run goes wrong, you can find and bulk-delete its transactions in Firefly III by filtering on that tag. The run label is also printed in the end-of-run log summary line, so you can identify it immediately from the container logs.
+
 ## Building locally
 
 ```bash

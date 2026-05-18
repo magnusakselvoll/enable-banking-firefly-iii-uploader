@@ -195,6 +195,28 @@ public class TransactionSyncerTests
     }
 
     [TestMethod]
+    public async Task SyncAsync_CreatedTransaction_HasRunLabel()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(entryRef: "ref-new")]);
+
+        var summary = await syncer.SyncAsync();
+
+        Assert.IsNotNull(summary.RunLabel);
+        Assert.IsTrue(System.Text.RegularExpressions.Regex.IsMatch(
+            summary.RunLabel,
+            @"^eb-sync-\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"),
+            $"RunLabel '{summary.RunLabel}' does not match expected format");
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Tags != null &&
+                s.Transactions[0].Tags!.Count == 1 &&
+                s.Transactions[0].Tags![0] == summary.RunLabel),
+            default);
+    }
+
+    [TestMethod]
     public async Task SyncAsync_NullEntryReferenceAndTransactionId_SkipsTransaction()
     {
         var (syncer, eb, ff) = CreateSyncer();

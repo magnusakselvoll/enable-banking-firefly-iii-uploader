@@ -37,7 +37,8 @@ public sealed class TransactionSyncer
 
     public async Task<SyncSummary> SyncAsync(CancellationToken cancellationToken = default)
     {
-        var summary = new SyncSummary();
+        var runLabel = $"eb-sync-{DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss'Z'")}";
+        var summary = new SyncSummary { RunLabel = runLabel };
 
         var allSessions = await _sessionStore.ListAsync(cancellationToken);
         if (allSessions.Count == 0)
@@ -92,15 +93,15 @@ public sealed class TransactionSyncer
 
         if (_options.WhatIf)
             _logger.LogInformation(
-                "[WHATIF] Summary: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
+                "[WHATIF] Run {RunLabel}: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
                 "{Created} would create, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
-                summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
+                summary.RunLabel, summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
                 summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
         else
             _logger.LogInformation(
-                "Sync summary: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
+                "Run {RunLabel}: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
                 "{Created} created, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
-                summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
+                summary.RunLabel, summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
                 summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
 
         return summary;
@@ -287,7 +288,7 @@ public sealed class TransactionSyncer
                 continue;
             }
 
-            var store = BuildTransactionStore(ebTx, externalId, fireflyAccount);
+            var store = BuildTransactionStore(ebTx, externalId, fireflyAccount, summary.RunLabel);
 
             if (_options.WhatIf)
             {
@@ -314,7 +315,8 @@ public sealed class TransactionSyncer
     private static TransactionStore BuildTransactionStore(
         EnableBanking.Models.Transaction ebTx,
         string externalId,
-        FireflyIii.Models.Account fireflyAccount)
+        FireflyIii.Models.Account fireflyAccount,
+        string runLabel)
     {
         var isCredit = string.Equals(ebTx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase);
         var type = isCredit ? "deposit" : "withdrawal";
@@ -331,7 +333,8 @@ public sealed class TransactionSyncer
             CurrencyCode: ebTx.TransactionAmount.Currency,
             ExternalId: externalId,
             SourceName: isCredit ? (ebTx.DebtorName ?? "Unknown") : fireflyAccount.Attributes.Name,
-            DestinationName: isCredit ? fireflyAccount.Attributes.Name : (ebTx.CreditorName ?? "Unknown"));
+            DestinationName: isCredit ? fireflyAccount.Attributes.Name : (ebTx.CreditorName ?? "Unknown"),
+            Tags: [runLabel]);
 
         return new TransactionStore(
             ErrorIfDuplicateHash: false,
