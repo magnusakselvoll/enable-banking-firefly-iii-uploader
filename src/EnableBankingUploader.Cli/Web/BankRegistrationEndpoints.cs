@@ -2,11 +2,9 @@ using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.EnableBanking.Models;
 using EnableBankingUploader.Core.Options;
 using EnableBankingUploader.Core.Sessions;
-using EnableBankingUploader.Core.Sync;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -21,7 +19,6 @@ internal static class BankRegistrationEndpoints
         app.MapPost("/register", StartRegistrationAsync);
         app.MapGet("/callback", CallbackAsync);
         app.MapPost("/sessions/{sessionId}/delete", DeleteSessionAsync);
-        app.MapPost("/sync", TriggerSyncAsync);
     }
 
     private static async Task<IResult> IndexAsync(
@@ -235,22 +232,6 @@ internal static class BankRegistrationEndpoints
             session.SessionId, stored.AspspName, stored.AccountUids.Count);
 
         return Results.Redirect($"/?msg={Uri.EscapeDataString($"Successfully registered {stored.AspspName}.")}");
-    }
-
-    private static IResult TriggerSyncAsync(
-        TransactionSyncer syncer,
-        IOptions<SyncOptions> options,
-        ILoggerFactory loggerFactory)
-    {
-        var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
-        var label = options.Value.WhatIf ? "what-if sync" : "sync";
-        logger.LogInformation("Manual {Label} triggered via web UI.", label);
-        _ = Task.Run(async () =>
-        {
-            try { await syncer.SyncAsync(); }
-            catch (Exception ex) { logger.LogError(ex, "Manual {Label} failed.", label); }
-        });
-        return Results.Redirect($"/?msg={Uri.EscapeDataString($"Manual {label} started — check the logs for progress.")}");
     }
 
     private static async Task<IResult> DeleteSessionAsync(

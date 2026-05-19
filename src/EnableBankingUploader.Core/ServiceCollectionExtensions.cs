@@ -33,16 +33,14 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient<IFireflyIiiClient, FireflyIiiClient>((sp, client) =>
         {
             var opts = sp.GetRequiredService<IOptions<SyncOptions>>().Value;
-            if (opts.HasFireflyIiiUrl)
-            {
-                client.BaseAddress = new Uri(opts.FireflyIiiUrl.TrimEnd('/') + '/');
-                client.DefaultRequestHeaders.Authorization =
-                    new AuthenticationHeaderValue("Bearer", opts.FireflyIiiToken);
-            }
+            client.BaseAddress = new Uri(opts.FireflyIiiUrl.TrimEnd('/') + '/');
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", opts.FireflyIiiToken);
         })
         .AddResilienceHandler("fireflyiii", ConfigureResiliencePipeline);
 
         services.AddSingleton<ISessionStore, FileSessionStore>();
+        services.AddSingleton<SyncGate>();
         services.AddTransient<AccountMatcher>();
         services.AddTransient<TransactionSyncer>();
 

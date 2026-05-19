@@ -1,5 +1,6 @@
 using System.Text;
 using EnableBankingUploader.Core.Sessions;
+using EnableBankingUploader.Core.Sync;
 
 namespace EnableBankingUploader.Cli.Web;
 
@@ -14,7 +15,7 @@ internal static class Html
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <title>{{Encode(title)}} — Enable Banking Uploader</title>
           <style>
-            body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+            body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #222; }
             h1 { font-size: 1.4rem; margin-bottom: 1.5rem; }
             h2 { font-size: 1.1rem; margin-top: 2rem; }
             table { border-collapse: collapse; width: 100%; }
@@ -35,6 +36,9 @@ internal static class Html
             label { display: block; margin-bottom: .3rem; font-weight: 600; }
             input, select { padding: .4rem .6rem; border: 1px solid #ccc; border-radius: 4px; width: 100%; max-width: 400px; box-sizing: border-box; margin-bottom: 1rem; }
             .field { margin-bottom: 1rem; }
+            .tx-skip { color: #888; }
+            .tx-create { font-weight: 600; }
+            .actions { margin-top: 1.5rem; }
           </style>
         </head>
         <body>
@@ -54,7 +58,7 @@ internal static class Html
         }
 
         sb.Append("<a href=\"/register\" class=\"btn\">+ Register new bank</a> ");
-        sb.Append("<form method=\"post\" action=\"/sync\"><button class=\"btn btn-secondary\">&#9654; Run sync now</button></form>");
+        sb.Append("<a href=\"/manual-sync\" class=\"btn btn-secondary\">&#9654; Manual sync</a>");
 
         if (sessions.Count == 0)
         {
@@ -142,10 +146,159 @@ internal static class Html
         return Page("Register Bank", sb.ToString());
     }
 
+    public static string ManualSyncSelect(IReadOnlyList<AccountSelectionRow> rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h2>Manual sync — select accounts</h2>");
+
+        if (rows.Count == 0)
+        {
+            sb.Append("<p>No accounts found. <a href=\"/register\">Register a bank</a> first.</p>");
+            sb.Append("<p><a href=\"/\">← Back</a></p>");
+            return Page("Manual sync", sb.ToString());
+        }
+
+        sb.Append("<form method=\"post\" action=\"/manual-sync/plan\">");
+        sb.Append("<table><thead><tr><th></th><th>Bank</th><th>IBAN</th><th>Status</th><th>Firefly account</th><th>Last transaction</th></tr></thead><tbody>");
+
+        foreach (var row in rows)
+        {
+            var (badgeClass, statusLabel) = BadgeFor(row.ValidUntil);
+            var disabled = (row.Expired || !row.Mapped) ? " disabled" : "";
+            var title = row.Expired ? "Session expired" : (!row.Mapped ? "No matching Firefly account" : "");
+            var titleAttr = !string.IsNullOrEmpty(title) ? $" title=\"{Encode(title)}\"" : "";
+            var ffName = row.Mapped ? Encode(row.FireflyAccountName) : "<em>Not mapped</em>";
+            var lastTx = row.LastTransactionDate is not null ? Encode(row.LastTransactionDate) : "<em>None</em>";
+
+            sb.Append(
+                $"<tr>" +
+                $"<td><input type=\"checkbox\" name=\"accounts\" value=\"{Encode(row.AccountUid)}\"{disabled}{titleAttr}></td>" +
+                $"<td>{Encode(row.BankName)}</td>" +
+                $"<td>{Encode(row.Iban ?? row.AccountUid)}</td>" +
+                $"<td><span class=\"badge {badgeClass}\">{statusLabel}</span></td>" +
+                $"<td>{ffName}</td>" +
+                $"<td>{lastTx}</td>" +
+                $"</tr>");
+        }
+
+        sb.Append("</tbody></table>");
+        sb.Append("<div class=\"actions\"><button type=\"submit\" class=\"btn\">Read transactions for selected accounts →</button></div>");
+        sb.Append("</form>");
+        sb.Append("<p><a href=\"/\">← Back</a></p>");
+        return Page("Manual sync", sb.ToString());
+    }
+
+    public static string ManualSyncPreview(SyncPlan plan, string token)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h2>Manual sync — preview</h2>");
+
+        var mappedAccounts = plan.Accounts.Where(a => !a.FetchError && !a.Unmapped).ToList();
+        var problemAccounts = plan.Accounts.Where(a => a.FetchError || a.Unmapped).ToList();
+
+        if (problemAccounts.Count > 0)
+        {
+            sb.Append("<div class=\"banner banner-error\">");
+            foreach (var a in problemAccounts)
+            {
+                var reason = a.FetchError ? "Failed to fetch account details" : "No matching Firefly account";
+                sb.Append($"<div>{Encode(a.BankName)} — {Encode(a.Iban ?? a.AccountUid)}: {reason}</div>");
+            }
+            sb.Append("</div>");
+        }
+
+        if (mappedAccounts.Count == 0)
+        {
+            sb.Append("<p>No transactions to review.</p>");
+            sb.Append("<p><a href=\"/manual-sync\">← Back to account selection</a></p>");
+            return Page("Manual sync — preview", sb.ToString());
+        }
+
+        var totalCreate = plan.Accounts.Sum(a => a.Transactions.Count(t => t.Decision == SyncDecision.Create));
+
+        foreach (var account in mappedAccounts)
+        {
+            var toCreate = account.Transactions.Count(t => t.Decision == SyncDecision.Create);
+            var toDuplicate = account.Transactions.Count(t => t.Decision == SyncDecision.SkipDuplicate);
+            sb.Append($"<h2>{Encode(account.BankName)} — {Encode(account.Iban ?? account.AccountUid)} → {Encode(account.FireflyAccountName)}</h2>");
+            sb.Append($"<p>{Encode(account.DateFrom.ToString("yyyy-MM-dd"))} to {Encode(account.DateTo.ToString("yyyy-MM-dd"))} — <strong>{toCreate} to create</strong>, {toDuplicate} already in Firefly</p>");
+
+            if (account.Transactions.Count == 0)
+            {
+                sb.Append("<p><em>No transactions in this date range.</em></p>");
+                continue;
+            }
+
+            sb.Append("<table><thead><tr><th>Date</th><th>Direction</th><th>Amount</th><th>Description</th><th>Status</th></tr></thead><tbody>");
+            foreach (var tx in account.Transactions)
+            {
+                var (rowClass, statusText) = tx.Decision switch
+                {
+                    SyncDecision.Create => ("tx-create", "Will import"),
+                    SyncDecision.SkipDuplicate => ("tx-skip", "Already in Firefly"),
+                    SyncDecision.SkipNonBooked => ("tx-skip", "Not yet booked"),
+                    SyncDecision.SkipNoId => ("tx-skip", "No ID — skip"),
+                    _ => ("", "Unknown"),
+                };
+                sb.Append(
+                    $"<tr class=\"{rowClass}\">" +
+                    $"<td>{Encode(tx.Date?.ToString("yyyy-MM-dd") ?? "—")}</td>" +
+                    $"<td>{Encode(tx.Direction)}</td>" +
+                    $"<td>{Encode(tx.Amount)} {Encode(tx.Currency)}</td>" +
+                    $"<td>{Encode(tx.Description)}</td>" +
+                    $"<td>{statusText}</td>" +
+                    $"</tr>");
+            }
+            sb.Append("</tbody></table>");
+        }
+
+        sb.Append("<form method=\"post\" action=\"/manual-sync/execute\">");
+        sb.Append($"<input type=\"hidden\" name=\"token\" value=\"{Encode(token)}\">");
+        sb.Append($"<div class=\"actions\"><button type=\"submit\" class=\"btn\">Sync {totalCreate} transaction(s) to Firefly III</button></div>");
+        sb.Append("</form>");
+        sb.Append("<p><a href=\"/manual-sync\">← Back to account selection</a></p>");
+        return Page("Manual sync — preview", sb.ToString());
+    }
+
+    public static string ManualSyncResult(SyncSummary summary)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h2>Manual sync — done</h2>");
+        sb.Append($"<p>Run label: <code>{Encode(summary.RunLabel)}</code></p>");
+
+        if (summary.Accounts.Count == 0)
+        {
+            sb.Append("<p>No accounts were processed.</p>");
+        }
+        else
+        {
+            sb.Append("<table><thead><tr><th>Bank</th><th>IBAN</th><th>Firefly account</th><th>Created</th><th>Duplicates skipped</th><th>Other skipped</th><th>Errors</th></tr></thead><tbody>");
+            foreach (var a in summary.Accounts)
+            {
+                var otherSkipped = a.SkippedNonBooked + a.SkippedNoId;
+                var rowNote = a.FetchError ? " (fetch error)" : a.Unmapped ? " (not mapped)" : "";
+                sb.Append(
+                    $"<tr>" +
+                    $"<td>{Encode(a.BankName)}</td>" +
+                    $"<td>{Encode(a.Iban ?? a.AccountUid)}</td>" +
+                    $"<td>{Encode(a.FireflyAccountName ?? "—")}{rowNote}</td>" +
+                    $"<td>{a.Created}</td>" +
+                    $"<td>{a.SkippedDuplicate}</td>" +
+                    $"<td>{otherSkipped}</td>" +
+                    $"<td>{(a.CreateErrors > 0 ? $"<span class=\"badge expired\">{a.CreateErrors} error(s)</span>" : "—")}</td>" +
+                    $"</tr>");
+            }
+            sb.Append("</tbody></table>");
+        }
+
+        sb.Append("<div class=\"actions\"><a href=\"/\" class=\"btn btn-secondary\">← Back to bank management</a></div>");
+        return Page("Manual sync — done", sb.ToString());
+    }
+
     public static string Error(string message) =>
         Page("Error", $"<div class=\"banner banner-error\">{Encode(message)}</div><p><a href=\"/\">← Back to bank management</a></p>");
 
-    private static (string cls, string label) BadgeFor(DateTimeOffset validUntil)
+    internal static (string cls, string label) BadgeFor(DateTimeOffset validUntil)
     {
         var remaining = validUntil - DateTimeOffset.UtcNow;
         if (remaining < TimeSpan.Zero) return ("expired", "Expired");

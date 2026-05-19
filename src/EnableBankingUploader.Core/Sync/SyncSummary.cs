@@ -13,8 +13,5 @@ public sealed class SyncSummary
     public int SkippedDuplicate { get; set; }
     public int SkippedNonBooked { get; set; }
     public int SkippedNoId { get; set; }
-
-    // Offline WhatIf only (no Firefly mapping or dedup)
-    public int OfflineAccounts { get; set; }
-    public int OfflineBookedFound { get; set; }
+    public IReadOnlyList<AccountSyncResult> Accounts { get; set; } = [];
 }
