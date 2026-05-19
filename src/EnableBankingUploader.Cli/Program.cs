@@ -15,9 +15,11 @@ builder.WebHost.UseUrls(listenUrl);
 builder.Services.AddEnableBankingUploader(builder.Configuration);
 builder.Services.AddHostedService<SyncScheduler>();
 builder.Services.AddSingleton<BankRegistrationState>();
+builder.Services.AddSingleton<ManualSyncState>();
 
 var app = builder.Build();
 
 BankRegistrationEndpoints.Map(app);
+ManualSyncEndpoints.Map(app);
 
 await app.RunAsync();

@@ -75,11 +75,11 @@ Two-project layout:
 - **EnableBankingUploader.Core** (`src/EnableBankingUploader.Core/`): Enable Banking API client, Firefly III API client, account matching, transaction deduplication, retry logic, file-backed session store. No dependency on the CLI.
 - **EnableBankingUploader.Cli** (`src/EnableBankingUploader.Cli/`): ASP.NET Core web host (`Microsoft.NET.Sdk.Web`). Runs two things concurrently:
   - `SyncScheduler` (a `BackgroundService`) — cron-driven transaction sync.
-  - Minimal API endpoints (`Web/BankRegistrationEndpoints.cs`) — bank management UI at `WebListenUrl`.
+  - Minimal API endpoints (`Web/BankRegistrationEndpoints.cs`, `Web/ManualSyncEndpoints.cs`) — bank management UI and manual sync UI at `WebListenUrl`.
 
 See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for Enable Banking API notes, rate limits, acceptable use, and error handling guidance.
 
-### Key design decisions (from issue #1)
+### Key design decisions
 
 - **Session acquisition**: Enable Banking sessions are created via `POST /auth` → bank consent → `POST /sessions`. Session IDs do **not** appear in the Control Panel and cannot be configured manually. They are obtained through the web UI and stored on disk.
 - **Session storage**: one JSON file per session in `SessionStorePath`. The cron job reads sessions from disk; the web UI writes them. Access control for the UI relies on the network (e.g. Tailscale ACLs) rather than app-level auth.
@@ -90,6 +90,9 @@ See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for E
 - **Deduplication**: use Enable Banking's unique transaction identifiers to skip transactions already present in Firefly III — safe to re-run without creating duplicates.
 - **Run labels**: each sync run generates a Firefly III tag (`eb-sync-<UTC timestamp>`, e.g. `eb-sync-2026-05-18T18:00:00Z`) and stamps it on every transaction created in that run. The label is also logged in the end-of-run summary. Prefix is hardcoded; no config key.
 - **Retry logic**: use Polly for transient API failures on both Enable Banking and Firefly III calls.
+- **Rate limits**: Enable Banking API calls are rate-limited (background fetches ~4/day/account). Firefly III is self-hosted and not rate-limited; GET requests can be made freely. Minimize Enable Banking calls — in particular the manual sync fetches transactions from Enable Banking exactly once (at the preview step) and reuses the computed plan for execution.
+- **Plan/execute split** (from issue #14): `TransactionSyncer.BuildPlanAsync` computes the full set of transactions that would be synced (with per-transaction decisions: Create / SkipDuplicate / SkipNonBooked / SkipNoId) without writing anything. `ExecutePlanAsync` writes the Create transactions to Firefly III and acquires a global `SyncGate` lock so manual and scheduled runs cannot overlap. Both the cron scheduler and the manual web flow use these same two methods — no separate code paths.
+- **Manual sync flow** (from issue #14): three-step web UI at `/manual-sync`: (1) select accounts by checkbox, (2) preview transactions (fetches EB once), (3) confirm to execute. Plan held in `ManualSyncState` singleton with a 15-min TTL so execution reuses the previewed plan without re-fetching Enable Banking.
 
 ## Tech Stack
 
@@ -122,14 +125,13 @@ Minimize external dependencies. Only add well-established, widely-used libraries
 |-----|---------|---------|-------------|
 | `EnableBankingUploader:EnableBankingApplicationId` | `EnableBankingUploader__EnableBankingApplicationId` | *(required)* | Enable Banking application UUID (used as JWT issuer/kid) |
 | `EnableBankingUploader:EnableBankingPrivateKeyPath` | `EnableBankingUploader__EnableBankingPrivateKeyPath` | *(required)* | Path to RSA private key PEM file for Enable Banking JWT signing |
-| `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required unless WhatIf offline)* | Base URL of the Firefly III instance |
+| `EnableBankingUploader:FireflyIiiUrl` | `EnableBankingUploader__FireflyIiiUrl` | *(required)* | Base URL of the Firefly III instance |
 | `EnableBankingUploader:FireflyIiiToken` | `EnableBankingUploader__FireflyIiiToken` | *(required)* | Firefly III personal access token |
 | `EnableBankingUploader:PublicBaseUrl` | `EnableBankingUploader__PublicBaseUrl` | *(required for bank registration)* | External HTTPS base URL (e.g. `https://eb.my-tailnet.ts.net`). The redirect URL sent to Enable Banking is `<PublicBaseUrl>/callback` — register that exact URL in the Control Panel. |
 | `EnableBankingUploader:SessionStorePath` | `EnableBankingUploader__SessionStorePath` | `/data/sessions` | Directory where bank session files are stored. Map to a Docker volume to persist across restarts. |
 | `EnableBankingUploader:WebListenUrl` | `EnableBankingUploader__WebListenUrl` | `http://0.0.0.0:8080` | Internal Kestrel bind URL. |
 | `EnableBankingUploader:Schedule` | `EnableBankingUploader__Schedule` | `0 18 * * *` | Cron expression for sync schedule |
 | `EnableBankingUploader:LookbackDays` | `EnableBankingUploader__LookbackDays` | `1` | Extra days to look back for late-arriving transactions |
-| `EnableBankingUploader:WhatIf` | `EnableBankingUploader__WhatIf` | `false` | Preview mode — no writes. With `FireflyIiiUrl` set: reads Firefly for account mapping, cutoff date, and dedup, then logs `[WHATIF] WOULD IMPORT` / `[WHATIF] SKIP DUPLICATE` per transaction. Without `FireflyIiiUrl`: fully offline — fetches Enable Banking history from `2000-01-01` and logs each booked transaction, no Firefly contact. |
 
 Place the RSA private key PEM file in the `secrets/` directory (gitignored). The `docker-compose.yml` mounts `./secrets/enablebanking.pem` into the container at the configured path.
 

@@ -16,6 +16,7 @@ public sealed class TransactionSyncer
     private readonly IFireflyIiiClient _firefly;
     private readonly ISessionStore _sessionStore;
     private readonly AccountMatcher _accountMatcher;
+    private readonly SyncGate _gate;
     private readonly SyncOptions _options;
     private readonly ILogger<TransactionSyncer> _logger;
 
@@ -24,6 +25,7 @@ public sealed class TransactionSyncer
         IFireflyIiiClient firefly,
         ISessionStore sessionStore,
         AccountMatcher accountMatcher,
+        SyncGate gate,
         IOptions<SyncOptions> options,
         ILogger<TransactionSyncer> logger)
     {
@@ -31,20 +33,36 @@ public sealed class TransactionSyncer
         _firefly = firefly;
         _sessionStore = sessionStore;
         _accountMatcher = accountMatcher;
+        _gate = gate;
         _options = options.Value;
         _logger = logger;
     }
 
+    // Automatic entrypoint used by SyncScheduler.
     public async Task<SyncSummary> SyncAsync(CancellationToken cancellationToken = default)
     {
+        var plan = await BuildPlanAsync(null, cancellationToken);
+        return await ExecutePlanAsync(plan, cancellationToken);
+    }
+
+    // Compute what would be synced for the given account UIDs (null = all valid sessions).
+    // Makes Enable Banking and read-only Firefly calls. Never writes.
+    public async Task<SyncPlan> BuildPlanAsync(
+        IReadOnlySet<string>? accountUidFilter,
+        CancellationToken cancellationToken = default)
+    {
         var runLabel = $"eb-sync-{DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss'Z'")}";
-        var summary = new SyncSummary { RunLabel = runLabel };
+        var plan = new SyncPlan
+        {
+            RunLabel = runLabel,
+            Accounts = [],
+        };
 
         var allSessions = await _sessionStore.ListAsync(cancellationToken);
         if (allSessions.Count == 0)
         {
             _logger.LogWarning("No bank sessions registered. Register banks via the web UI.");
-            return summary;
+            return plan;
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -55,142 +73,108 @@ public sealed class TransactionSyncer
             _logger.LogWarning(
                 "Session for {Bank} expired at {ValidUntil}. Re-authorize via the web UI.",
                 expired.AspspName, expired.ValidUntil);
-            summary.ExpiredSessions++;
+            plan.ExpiredSessions++;
         }
 
-        summary.ValidSessions = validSessions.Count;
+        plan.ValidSessions = validSessions.Count;
 
         if (validSessions.Count == 0)
         {
             _logger.LogWarning("All registered sessions are expired. Re-authorize banks via the web UI.");
-            return summary;
+            return plan;
         }
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-
-        if (_options.WhatIf && !_options.HasFireflyIiiUrl)
-        {
-            _logger.LogInformation("[WHATIF] No Firefly III URL configured — running offline preview for {Count} session(s). Nothing will be written.", validSessions.Count);
-            foreach (var stored in validSessions)
-                await OfflineWhatIfSessionAsync(stored.SessionId, today, summary, cancellationToken);
-            _logger.LogInformation(
-                "[WHATIF] Offline preview summary: {Sessions} session(s), {Accounts} account(s), {Booked} booked transaction(s) found.",
-                summary.ValidSessions, summary.OfflineAccounts, summary.OfflineBookedFound);
-            return summary;
-        }
-
-        if (_options.WhatIf)
-            _logger.LogInformation("[WHATIF] Connected preview for {Count} session(s) — reading from Firefly III, nothing will be written.", validSessions.Count);
-        else
-            _logger.LogInformation("Starting transaction sync for {Count} session(s).", validSessions.Count);
-
         var fireflyAccounts = await _firefly.GetAssetAccountsAsync(cancellationToken);
+        var accountPlans = new List<AccountSyncPlan>();
 
         foreach (var stored in validSessions)
         {
-            await SyncSessionAsync(stored.SessionId, fireflyAccounts, today, summary, cancellationToken);
+            EnableBanking.Models.Session session;
+            try
+            {
+                session = await _enableBanking.GetSessionAsync(stored.SessionId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to fetch session {SessionId}. It may be expired — re-authorize via the web UI.", stored.SessionId);
+                plan.SessionFetchErrors++;
+                continue;
+            }
+
+            foreach (var accountUid in session.AccountUids)
+            {
+                if (accountUidFilter is not null && !accountUidFilter.Contains(accountUid))
+                    continue;
+
+                var accountPlan = await BuildAccountPlanAsync(
+                    accountUid, stored.AspspName, fireflyAccounts, today, runLabel, cancellationToken);
+                accountPlans.Add(accountPlan);
+            }
         }
 
-        if (_options.WhatIf)
-            _logger.LogInformation(
-                "[WHATIF] Run {RunLabel}: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
-                "{Created} would create, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
-                summary.RunLabel, summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
-                summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
-        else
-            _logger.LogInformation(
-                "Run {RunLabel}: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
-                "{Created} created, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
-                summary.RunLabel, summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
-                summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
+        plan.Accounts = accountPlans;
+        return plan;
+    }
+
+    // Execute a computed plan: write Create transactions to Firefly.
+    // Acquires the sync gate so no concurrent sync (manual or scheduled) can overlap.
+    public async Task<SyncSummary> ExecutePlanAsync(
+        SyncPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        var summary = new SyncSummary { RunLabel = plan.RunLabel };
+        summary.ValidSessions = plan.ValidSessions;
+        summary.ExpiredSessions = plan.ExpiredSessions;
+        summary.SessionFetchErrors = plan.SessionFetchErrors;
+
+        if (plan.Accounts.Count == 0 && plan.ValidSessions == 0)
+            return summary;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var accountResults = new List<AccountSyncResult>();
+
+            foreach (var accountPlan in plan.Accounts)
+            {
+                var result = await ExecuteAccountPlanAsync(accountPlan, cancellationToken);
+                accountResults.Add(result);
+
+                summary.Created += result.Created;
+                summary.SkippedDuplicate += result.SkippedDuplicate;
+                summary.SkippedNonBooked += result.SkippedNonBooked;
+                summary.SkippedNoId += result.SkippedNoId;
+                if (result.FetchError)
+                    summary.AccountFetchErrors++;
+                else if (result.Unmapped)
+                    summary.UnmappedAccounts++;
+                else
+                    summary.MappedAccounts++;
+            }
+
+            summary.Accounts = accountResults;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        _logger.LogInformation(
+            "Run {RunLabel}: {Mapped} account(s) mapped, {Unmapped} unmapped, {FetchErrors} fetch error(s); " +
+            "{Created} created, {Duplicate} duplicate(s) skipped, {NonBooked} non-booked skipped, {NoId} no-id skipped.",
+            summary.RunLabel, summary.MappedAccounts, summary.UnmappedAccounts, summary.AccountFetchErrors,
+            summary.Created, summary.SkippedDuplicate, summary.SkippedNonBooked, summary.SkippedNoId);
 
         return summary;
     }
 
-    private async Task OfflineWhatIfSessionAsync(string sessionId, DateOnly today, SyncSummary summary, CancellationToken ct)
-    {
-        EnableBanking.Models.Session session;
-        try
-        {
-            session = await _enableBanking.GetSessionAsync(sessionId, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[WHATIF] Failed to fetch session {SessionId}.", sessionId);
-            summary.SessionFetchErrors++;
-            return;
-        }
-
-        foreach (var accountUid in session.AccountUids)
-            await OfflineWhatIfAccountAsync(accountUid, today, summary, ct);
-    }
-
-    private async Task OfflineWhatIfAccountAsync(string accountUid, DateOnly today, SyncSummary summary, CancellationToken ct)
-    {
-        EnableBanking.Models.Account ebAccount;
-        try
-        {
-            ebAccount = await _enableBanking.GetAccountAsync(accountUid, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[WHATIF] Failed to fetch details for account {Uid}, skipping.", accountUid);
-            return;
-        }
-
-        summary.OfflineAccounts++;
-
-        var dateFrom = new DateOnly(2000, 1, 1); // fetch all available history in offline preview mode
-        _logger.LogInformation("[WHATIF] Account {Uid} IBAN={Iban} — fetching {DateFrom} to {DateTo}.",
-            accountUid, ebAccount.AccountId?.Iban, dateFrom, today);
-
-        var transactions = await _enableBanking.GetTransactionsAsync(accountUid, dateFrom, today, ct);
-        var booked = transactions
-            .Where(t => string.Equals(t.Status, "BOOK", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        foreach (var tx in booked)
-        {
-            var dir = string.Equals(tx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase) ? "CREDIT" : "DEBIT";
-            var desc = tx.RemittanceInformation?.FirstOrDefault() ?? tx.EntryReference ?? "(no description)";
-            _logger.LogInformation("[WHATIF]   {Date} {Dir} {Amount} {Currency} — {Desc}",
-                tx.BookingDate ?? tx.ValueDate, dir, tx.TransactionAmount.Amount, tx.TransactionAmount.Currency, desc);
-        }
-
-        summary.OfflineBookedFound += booked.Count;
-        _logger.LogInformation("[WHATIF] Found {Count} booked transaction(s) for account {Uid}.", booked.Count, accountUid);
-    }
-
-    private async Task SyncSessionAsync(
-        string sessionId,
-        IReadOnlyList<FireflyIii.Models.Account> fireflyAccounts,
-        DateOnly today,
-        SyncSummary summary,
-        CancellationToken cancellationToken)
-    {
-        EnableBanking.Models.Session session;
-        try
-        {
-            session = await _enableBanking.GetSessionAsync(sessionId, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to fetch session {SessionId}. It may be expired — re-authorize via the web UI.", sessionId);
-            summary.SessionFetchErrors++;
-            return;
-        }
-
-        foreach (var accountUid in session.AccountUids)
-        {
-            await SyncAccountAsync(accountUid, fireflyAccounts, today, summary, cancellationToken);
-        }
-    }
-
-    private async Task SyncAccountAsync(
+    private async Task<AccountSyncPlan> BuildAccountPlanAsync(
         string accountUid,
-        IReadOnlyList<FireflyIii.Models.Account> fireflyAccounts,
+        string bankName,
+        IReadOnlyList<Account> fireflyAccounts,
         DateOnly today,
-        SyncSummary summary,
+        string runLabel,
         CancellationToken cancellationToken)
     {
         EnableBanking.Models.Account ebAccount;
@@ -201,48 +185,30 @@ public sealed class TransactionSyncer
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to fetch details for Enable Banking account {Uid}, skipping.", accountUid);
-            summary.AccountFetchErrors++;
-            return;
+            return new AccountSyncPlan(accountUid, bankName, null, null, null,
+                today, today, [], Unmapped: false, FetchError: true);
         }
 
+        var iban = ebAccount.AccountId?.Iban;
         var matches = _accountMatcher.MatchAccounts([ebAccount], fireflyAccounts);
         if (matches.Count == 0)
         {
-            summary.UnmappedAccounts++;
-            return;
+            return new AccountSyncPlan(accountUid, bankName, iban, null, null,
+                today, today, [], Unmapped: true, FetchError: false);
         }
 
-        summary.MappedAccounts++;
         var (_, fireflyAccount) = matches[0];
-
-        if (_options.WhatIf)
-            _logger.LogInformation(
-                "[WHATIF] Account mapping: Enable Banking {Uid} (IBAN {Iban}) -> Firefly III {FfId} ({FfName}).",
-                accountUid, ebAccount.AccountId?.Iban, fireflyAccount.Id, fireflyAccount.Attributes.Name);
-
         var latestDate = await _firefly.GetLatestTransactionDateAsync(fireflyAccount.Id, cancellationToken);
         var dateFrom = latestDate.HasValue
             ? latestDate.Value.AddDays(-_options.LookbackDays)
             : today.AddDays(-DefaultLookbackDays);
 
         _logger.LogInformation(
-            "Syncing {Name} (IBAN: {Iban}) from {DateFrom} to {DateTo}.",
-            fireflyAccount.Attributes.Name,
-            ebAccount.AccountId?.Iban,
-            dateFrom,
-            today);
+            "Planning {Name} (IBAN: {Iban}) from {DateFrom} to {DateTo}.",
+            fireflyAccount.Attributes.Name, iban, dateFrom, today);
 
-        if (_options.WhatIf)
-            _logger.LogInformation(
-                "[WHATIF] {Name}: computed cutoff date range {DateFrom} to {DateTo} (latest Firefly date: {Latest}).",
-                fireflyAccount.Attributes.Name, dateFrom, today,
-                latestDate.HasValue ? latestDate.Value.ToString() : "none");
-
-        var ebTransactions = await _enableBanking.GetTransactionsAsync(
-            accountUid, dateFrom, today, cancellationToken);
-
-        var existingTransactions = await _firefly.GetTransactionsAsync(
-            fireflyAccount.Id, dateFrom, today, cancellationToken);
+        var ebTransactions = await _enableBanking.GetTransactionsAsync(accountUid, dateFrom, today, cancellationToken);
+        var existingTransactions = await _firefly.GetTransactionsAsync(fireflyAccount.Id, dateFrom, today, cancellationToken);
 
         var existingExternalIds = existingTransactions
             .SelectMany(t => t.Attributes.Transactions)
@@ -250,72 +216,118 @@ public sealed class TransactionSyncer
             .Select(s => s.ExternalId!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var created = 0;
-        var skipped = 0;
+        var planned = new List<PlannedTransaction>();
 
         foreach (var ebTx in ebTransactions)
         {
-            // Only deduplicate booked transactions; pending IDs may be unstable
             if (!string.Equals(ebTx.Status, "BOOK", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogDebug("Skipping non-booked transaction (status={Status}).", ebTx.Status);
-                skipped++;
-                summary.SkippedNonBooked++;
+                planned.Add(new PlannedTransaction(
+                    SyncDecision.SkipNonBooked,
+                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ebTx.RemittanceInformation?.FirstOrDefault() ?? "(no description)",
+                    ebTx.TransactionAmount.Amount,
+                    ebTx.TransactionAmount.Currency,
+                    DirectionOf(ebTx.CreditDebitIndicator),
+                    null, null));
                 continue;
             }
 
-            // entry_reference is the stable dedup key for booked transactions
             var externalId = ebTx.EntryReference ?? ebTx.TransactionId;
             if (string.IsNullOrEmpty(externalId))
             {
                 _logger.LogWarning("Booked transaction has no entry_reference or transaction_id on account {Uid}, skipping.", accountUid);
-                skipped++;
-                summary.SkippedNoId++;
+                planned.Add(new PlannedTransaction(
+                    SyncDecision.SkipNoId,
+                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ebTx.RemittanceInformation?.FirstOrDefault() ?? "(no description)",
+                    ebTx.TransactionAmount.Amount,
+                    ebTx.TransactionAmount.Currency,
+                    DirectionOf(ebTx.CreditDebitIndicator),
+                    null, null));
                 continue;
             }
-
-            var desc = ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)";
-            var txDate = ebTx.BookingDate ?? ebTx.ValueDate;
 
             if (existingExternalIds.Contains(externalId))
             {
-                if (_options.WhatIf)
-                    _logger.LogInformation(
-                        "[WHATIF] SKIP DUPLICATE: external_id={ExternalId} date={Date} amount={Amount} {Currency} — {Desc}",
-                        externalId, txDate, ebTx.TransactionAmount.Amount, ebTx.TransactionAmount.Currency, desc);
-                skipped++;
-                summary.SkippedDuplicate++;
+                planned.Add(new PlannedTransaction(
+                    SyncDecision.SkipDuplicate,
+                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)",
+                    ebTx.TransactionAmount.Amount,
+                    ebTx.TransactionAmount.Currency,
+                    DirectionOf(ebTx.CreditDebitIndicator),
+                    externalId, null));
                 continue;
             }
 
-            var store = BuildTransactionStore(ebTx, externalId, fireflyAccount, summary.RunLabel);
+            var store = BuildTransactionStore(ebTx, externalId, fireflyAccount, runLabel);
+            planned.Add(new PlannedTransaction(
+                SyncDecision.Create,
+                ebTx.BookingDate ?? ebTx.ValueDate,
+                ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)",
+                ebTx.TransactionAmount.Amount,
+                ebTx.TransactionAmount.Currency,
+                DirectionOf(ebTx.CreditDebitIndicator),
+                externalId, store));
+        }
 
-            if (_options.WhatIf)
+        return new AccountSyncPlan(
+            accountUid, bankName, iban,
+            fireflyAccount.Id, fireflyAccount.Attributes.Name,
+            dateFrom, today, planned,
+            Unmapped: false, FetchError: false);
+    }
+
+    private async Task<AccountSyncResult> ExecuteAccountPlanAsync(
+        AccountSyncPlan accountPlan,
+        CancellationToken cancellationToken)
+    {
+        if (accountPlan.FetchError)
+            return new AccountSyncResult(accountPlan.AccountUid, accountPlan.BankName, accountPlan.Iban,
+                null, 0, 0, 0, 0, 0, Unmapped: false, FetchError: true);
+
+        if (accountPlan.Unmapped)
+            return new AccountSyncResult(accountPlan.AccountUid, accountPlan.BankName, accountPlan.Iban,
+                null, 0, 0, 0, 0, 0, Unmapped: true, FetchError: false);
+
+        var created = 0;
+        var createErrors = 0;
+        var skippedDuplicate = accountPlan.Transactions.Count(t => t.Decision == SyncDecision.SkipDuplicate);
+        var skippedNonBooked = accountPlan.Transactions.Count(t => t.Decision == SyncDecision.SkipNonBooked);
+        var skippedNoId = accountPlan.Transactions.Count(t => t.Decision == SyncDecision.SkipNoId);
+
+        foreach (var tx in accountPlan.Transactions.Where(t => t.Decision == SyncDecision.Create))
+        {
+            try
             {
-                _logger.LogInformation(
-                    "[WHATIF] WOULD IMPORT: external_id={ExternalId} date={Date} amount={Amount} {Currency} — {Desc}",
-                    externalId, txDate, ebTx.TransactionAmount.Amount, ebTx.TransactionAmount.Currency, desc);
+                await _firefly.CreateTransactionAsync(tx.Store!, cancellationToken);
                 created++;
-                summary.Created++;
-                continue;
             }
-
-            await _firefly.CreateTransactionAsync(store, cancellationToken);
-            created++;
-            summary.Created++;
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to create transaction {ExternalId} for account {Uid}.", tx.ExternalId, accountPlan.AccountUid);
+                createErrors++;
+            }
         }
 
         _logger.LogInformation(
-            _options.WhatIf
-                ? "[WHATIF] {Name}: would create {Created}, would skip {Skipped} transactions."
-                : "{Name}: created {Created}, skipped {Skipped} transactions.",
-            fireflyAccount.Attributes.Name, created, skipped);
+            "{Name}: created {Created}, skipped {Skipped} transactions.",
+            accountPlan.FireflyAccountName, created,
+            skippedDuplicate + skippedNonBooked + skippedNoId);
+
+        return new AccountSyncResult(
+            accountPlan.AccountUid, accountPlan.BankName, accountPlan.Iban,
+            accountPlan.FireflyAccountName,
+            created, skippedDuplicate, skippedNonBooked, skippedNoId, createErrors,
+            Unmapped: false, FetchError: false);
     }
 
     private static TransactionStore BuildTransactionStore(
         EnableBanking.Models.Transaction ebTx,
         string externalId,
-        FireflyIii.Models.Account fireflyAccount,
+        Account fireflyAccount,
         string runLabel)
     {
         var isCredit = string.Equals(ebTx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase);
@@ -340,4 +352,7 @@ public sealed class TransactionSyncer
             ErrorIfDuplicateHash: false,
             Transactions: [split]);
     }
+
+    private static string DirectionOf(string? creditDebitIndicator) =>
+        string.Equals(creditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase) ? "CREDIT" : "DEBIT";
 }
