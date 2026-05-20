@@ -337,6 +337,8 @@ public sealed class TransactionSyncer
             ?? ebTx.EntryReference
             ?? "(no description)";
 
+        var notes = BuildNotes(ebTx, descriptionUsesEntryReference: ebTx.RemittanceInformation is null or { Count: 0 });
+
         var split = new TransactionSplit(
             Type: type,
             Date: date,
@@ -346,11 +348,45 @@ public sealed class TransactionSyncer
             ExternalId: externalId,
             SourceName: isCredit ? (ebTx.DebtorName ?? "Unknown") : fireflyAccount.Attributes.Name,
             DestinationName: isCredit ? fireflyAccount.Attributes.Name : (ebTx.CreditorName ?? "Unknown"),
-            Tags: [runLabel]);
+            Tags: [runLabel],
+            Notes: notes);
 
         return new TransactionStore(
             ErrorIfDuplicateHash: false,
             Transactions: [split]);
+    }
+
+    private static string? BuildNotes(EnableBanking.Models.Transaction ebTx, bool descriptionUsesEntryReference)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        if (ebTx.RemittanceInformation is { Count: > 0 })
+        {
+            sb.AppendLine("Remittance information:");
+            foreach (var line in ebTx.RemittanceInformation)
+                sb.AppendLine(line);
+        }
+
+        var extras = new List<string>();
+        if (!descriptionUsesEntryReference && !string.IsNullOrEmpty(ebTx.EntryReference))
+            extras.Add($"Entry reference: {ebTx.EntryReference}");
+        if (!string.IsNullOrEmpty(ebTx.TransactionId))
+            extras.Add($"Transaction ID: {ebTx.TransactionId}");
+        if (!string.IsNullOrEmpty(ebTx.CreditorName))
+            extras.Add($"Creditor: {ebTx.CreditorName}");
+        if (!string.IsNullOrEmpty(ebTx.DebtorName))
+            extras.Add($"Debtor: {ebTx.DebtorName}");
+
+        if (extras.Count > 0)
+        {
+            if (sb.Length > 0)
+                sb.AppendLine();
+            foreach (var line in extras)
+                sb.AppendLine(line);
+        }
+
+        var result = sb.ToString().TrimEnd();
+        return result.Length > 0 ? result : null;
     }
 
     private static string DirectionOf(string? creditDebitIndicator) =>

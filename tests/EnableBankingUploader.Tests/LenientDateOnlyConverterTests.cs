@@ -41,7 +41,7 @@ public class LenientDateOnlyConverterTests
     {
         var store = new TransactionStore(false, [
             new TransactionSplit("withdrawal", new DateOnly(2018, 9, 17), "50.00", "Test",
-                "NOK", "ext-1", "Source", "Dest", null),
+                "NOK", "ext-1", "Source", "Dest", null, null),
         ]);
         var json = JsonSerializer.Serialize(store, Options);
         Assert.Contains("\"2018-09-17\"", json);
