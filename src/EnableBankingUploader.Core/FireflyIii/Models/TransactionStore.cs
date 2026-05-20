@@ -11,7 +11,8 @@ public record TransactionSplit(
     [property: JsonPropertyName("external_id")] string ExternalId,
     [property: JsonPropertyName("source_name")] string? SourceName,
     [property: JsonPropertyName("destination_name")] string? DestinationName,
-    [property: JsonPropertyName("tags")] IReadOnlyList<string>? Tags);
+    [property: JsonPropertyName("tags")] IReadOnlyList<string>? Tags,
+    [property: JsonPropertyName("notes")] string? Notes);
 
 public record TransactionStore(
     [property: JsonPropertyName("error_if_duplicate_hash")] bool ErrorIfDuplicateHash,

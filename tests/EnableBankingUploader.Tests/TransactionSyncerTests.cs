@@ -36,12 +36,15 @@ public class TransactionSyncerTests
         string creditDebit = "DBIT",
         string amount = "100.00",
         string status = "BOOK",
-        DateOnly? date = null) =>
+        DateOnly? date = null,
+        IReadOnlyList<string>? remittance = null,
+        string? creditor = "Creditor Name",
+        string? debtor = null) =>
         new(txId, entryRef,
             new TransactionAmount(amount, "NOK"),
             creditDebit,
             date ?? new DateOnly(2024, 1, 15),
-            null, status, ["Test payment"], "Creditor Name", null);
+            null, status, remittance ?? ["Test payment"], creditor, debtor);
 
     private static Core.FireflyIii.Models.Transaction FfTransaction(string externalId) =>
         new("ff-tx-1", new Core.FireflyIii.Models.TransactionGroupAttributes(
@@ -353,6 +356,53 @@ public class TransactionSyncerTests
         Assert.HasCount(1, summary.Accounts);
         Assert.AreEqual(1, summary.Accounts[0].Created);
         Assert.AreEqual(FireflyAccountName, summary.Accounts[0].FireflyAccountName);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_MultipleRemittanceLines_PopulatesNotes()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "EB-9988",
+            txId: "tx-42",
+            remittance: ["COMERCIALIZADORA REGULADA, GAS POWER,", "FACTURA ENE-2026", "REF: 12345"],
+            creditor: "COMERCIALIZADORA REGULADA",
+            debtor: null)]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Description == "COMERCIALIZADORA REGULADA, GAS POWER," &&
+                s.Transactions[0].Notes != null &&
+                s.Transactions[0].Notes!.Contains("Remittance information:") &&
+                s.Transactions[0].Notes!.Contains("COMERCIALIZADORA REGULADA, GAS POWER,") &&
+                s.Transactions[0].Notes!.Contains("FACTURA ENE-2026") &&
+                s.Transactions[0].Notes!.Contains("REF: 12345") &&
+                s.Transactions[0].Notes!.Contains("Entry reference: EB-9988") &&
+                s.Transactions[0].Notes!.Contains("Transaction ID: tx-42") &&
+                s.Transactions[0].Notes!.Contains("Creditor: COMERCIALIZADORA REGULADA")),
+            default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_NoRemittanceUsesEntryReferenceAsDescription_NotesOmitsEntryRef()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "EB-9988",
+            txId: "tx-42",
+            remittance: [],
+            creditor: null,
+            debtor: null)]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Description == "EB-9988" &&
+                (s.Transactions[0].Notes == null || !s.Transactions[0].Notes!.Contains("Entry reference:"))),
+            default);
     }
 
     [TestMethod]
