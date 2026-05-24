@@ -96,6 +96,67 @@ Enable Banking's unique transaction identifiers are stored as `external_id` on F
 
 Every sync run stamps each transaction it creates with a Firefly III tag of the form `eb-sync-2026-05-18T18:00:00Z` (the UTC start time of that run). If a run goes wrong, you can find and bulk-delete its transactions in Firefly III by filtering on that tag. The run label is also printed in the end-of-run log summary line, so you can identify it immediately from the container logs.
 
+## Logging & observability
+
+### Format
+
+In the deployed container (Production environment) every log event is emitted as a **single line of JSON** — including exceptions with full stack traces. Each Loki entry maps to exactly one log event.
+
+When running locally with `dotnet run` (Development environment, set by `Properties/launchSettings.json`) the output uses the **human-readable simple console formatter** instead, with scope values shown inline.
+
+### JSON field reference
+
+| Field | Notes |
+|---|---|
+| `Timestamp` | ISO 8601 UTC |
+| `LogLevel` | `Trace` / `Debug` / `Information` / `Warning` / `Error` / `Critical` |
+| `Category` | Logger category, e.g. `EnableBankingUploader.Core.Sync.TransactionSyncer` |
+| `Message` | Rendered log message |
+| `Exception` | Full stack trace as a single string (present on error/warning with exception) |
+| `State.*` | Named message-template parameters, e.g. `State.RunLabel`, `State.Name`, `State.Created` |
+| `Scopes[n].*` | Scope key/value pairs — see scope keys below |
+
+### Scope keys
+
+Scopes are emitted as objects in the `Scopes` array:
+
+| Key | Set by | Description |
+|---|---|---|
+| `RunLabel` | `TransactionSyncer` (both build and execute) | Correlates all logs for one sync run; matches the Firefly III tag on created transactions |
+| `AccountUid` | `TransactionSyncer` (per-account methods) | Enable Banking account UID |
+| `Bank` | `TransactionSyncer` (per-account methods) | Bank / ASPSP name |
+| `Aspsp` / `Country` | `BankRegistrationEndpoints` (register, callback) | Bank being registered |
+| `SessionId` | `BankRegistrationEndpoints` (delete) | Session being removed |
+| `Source` / `SelectedAccounts` | `ManualSyncEndpoints` | `Source=manual` distinguishes manual from scheduled runs |
+
+### Querying in Loki
+
+**Find all logs for a specific sync run** (fastest — line filter, no parsing needed):
+
+```logql
+{container="eb-uploader"} |= "eb-sync-2026-05-24T18:00:00Z"
+```
+
+**Find all errors across runs:**
+
+```logql
+{container="eb-uploader"} | json | LogLevel = "Error"
+```
+
+**Find logs for a specific account:**
+
+```logql
+{container="eb-uploader"} |= "NO12345678901234567890"
+```
+
+**Find all manual sync runs:**
+
+```logql
+{container="eb-uploader"} | json | line_format "{{.Scopes}}" |= `"Source":"manual"`
+```
+
+`|=` line filters are evaluated before JSON parsing and are very fast — prefer them for run-label and account searches. Use `| json` when you want to filter on parsed fields like `LogLevel`.
+
 ## Building locally
 
 ```bash

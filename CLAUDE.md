@@ -94,6 +94,7 @@ See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for E
 - **Plan/execute split** (from issue #14): `TransactionSyncer.BuildPlanAsync` computes the full set of transactions that would be synced (with per-transaction decisions: Create / SkipDuplicate / SkipNonBooked / SkipNoId) without writing anything. `ExecutePlanAsync` writes the Create transactions to Firefly III and acquires a global `SyncGate` lock so manual and scheduled runs cannot overlap. Both the cron scheduler and the manual web flow use these same two methods — no separate code paths.
 - **Manual sync flow** (from issue #14): three-step web UI at `/manual-sync`: (1) select accounts by checkbox, (2) preview transactions (fetches EB once), (3) confirm to execute. Plan held in `ManualSyncState` singleton with a 15-min TTL so execution reuses the previewed plan without re-fetching Enable Banking.
 - **Notes field**: Firefly III transaction notes capture the full raw Enable Banking context — all `remittance_information` lines, `entry_reference` (when not already used as the description), `transaction_id`, and creditor/debtor names. Description stays as the first remittance line (or EntryReference fallback) so list views are unchanged.
+- **Logging format** (from issue #21): the container (Production environment) emits structured JSON — one line per log event, so stack traces land as a single Loki entry rather than many lines. Local `dotnet run` (Development, via `Properties/launchSettings.json`) uses the human-readable simple console formatter with scopes shown inline. The formatter is selected by `builder.Environment.IsDevelopment()` in `Program.cs`; no appsettings key controls it. Log-level defaults live in `appsettings.json` under `Logging:LogLevel`. All log calls use named message-template parameters; never string interpolation. `IncludeScopes = true` on both formatters. Scope keys: `RunLabel` (per sync run, from `TransactionSyncer`), `AccountUid` + `Bank` (per account), `SessionId` (delete-session endpoint), `Aspsp` + `Country` (bank registration endpoints), `Source=manual` (manual sync web flow).
 
 ## Tech Stack
 
@@ -102,7 +103,7 @@ See [`docs/enable_banking_reference.md`](docs/enable_banking_reference.md) for E
 - **HTTP clients**: Hand-written wrappers (`EnableBankingClient`, `FireflyIiiClient`)
 - **Retry**: Polly
 - **Configuration**: Microsoft.Extensions.Configuration (JSON + Environment Variables)
-- **Logging**: Microsoft.Extensions.Logging (console)
+- **Logging**: Microsoft.Extensions.Logging — JSON console formatter in Production (container), simple readable console in Development (`dotnet run`)
 - **Testing**: MSTest
 - **Deployment**: Docker via .NET SDK container publish (`dotnet publish -t:PublishContainer`) — no Dockerfile needed; uses the `aspnet` runtime base image
 

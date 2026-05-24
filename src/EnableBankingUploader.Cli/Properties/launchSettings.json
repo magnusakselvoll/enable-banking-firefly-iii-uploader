@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "EnableBankingUploader.Cli": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

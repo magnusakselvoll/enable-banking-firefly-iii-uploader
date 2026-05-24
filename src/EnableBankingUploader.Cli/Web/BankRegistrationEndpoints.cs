@@ -132,6 +132,7 @@ internal static class BankRegistrationEndpoints
                 "text/html");
 
         var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
+        using var aspspScope = logger.BeginScope(new Dictionary<string, object> { ["Aspsp"] = aspspName, ["Country"] = aspspCountry });
         if (!publicBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             logger.LogWarning("PublicBaseUrl {Url} is not https://. Production Enable Banking requires https; sandbox may allow http.", publicBaseUrl);
 
@@ -205,6 +206,7 @@ internal static class BankRegistrationEndpoints
         if (pending is null)
             return Results.Redirect("/?msg=Authorization+state+invalid+or+expired.+Please+try+again.&err=1");
 
+        using var aspspScope = logger.BeginScope(new Dictionary<string, object> { ["Aspsp"] = pending.AspspName, ["Country"] = pending.AspspCountry });
         AuthorizedSession session;
         try
         {
@@ -242,6 +244,7 @@ internal static class BankRegistrationEndpoints
         CancellationToken ct)
     {
         var logger = loggerFactory.CreateLogger(nameof(BankRegistrationEndpoints));
+        using var sessionScope = logger.BeginScope(new Dictionary<string, object> { ["SessionId"] = sessionId });
         try
         {
             await client.RevokeSessionAsync(sessionId, ct);
