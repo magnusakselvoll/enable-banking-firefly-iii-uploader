@@ -1,12 +1,11 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [published]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -48,3 +47,25 @@ jobs:
             /t:PublishContainer \
             /p:ContainerRegistry=ghcr.io \
             /p:ContainerImageTag=latest
+
+      - name: Add Docker image reference to release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.tags.outputs.version }}
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          BODY="$(gh release view "$TAG" --json body -q .body)"
+          if printf '%s' "$BODY" | grep -qF '## Docker image'; then
+            echo 'Docker image section already present; skipping.'
+            exit 0
+          fi
+          {
+            printf '%s\n\n' "$BODY"
+            printf '## Docker image\n\n'
+            printf '```\n'
+            printf 'docker pull %s:%s\n' "$IMAGE" "$VERSION"
+            printf '```\n\n'
+            printf 'Also published as `%s:latest`.\n' "$IMAGE"
+          } > release-notes.md
+          gh release edit "$TAG" --notes-file release-notes.md
