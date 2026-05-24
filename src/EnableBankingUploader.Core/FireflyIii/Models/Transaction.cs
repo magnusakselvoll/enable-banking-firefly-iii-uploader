@@ -6,9 +6,7 @@ public record TransactionSplitAttributes(
     [property: JsonPropertyName("external_id")] string? ExternalId,
     [property: JsonPropertyName("date")] DateOnly Date,
     [property: JsonPropertyName("amount")] string Amount,
-    [property: JsonPropertyName("description")] string? Description,
-    [property: JsonPropertyName("transaction_journal_id")] string? TransactionJournalId = null,
-    [property: JsonPropertyName("notes")] string? Notes = null);
+    [property: JsonPropertyName("description")] string? Description);
 
 public record TransactionGroupAttributes(
     [property: JsonPropertyName("transactions")] IReadOnlyList<TransactionSplitAttributes> Transactions);

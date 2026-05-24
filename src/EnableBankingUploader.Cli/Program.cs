@@ -16,12 +16,10 @@ builder.Services.AddEnableBankingUploader(builder.Configuration);
 builder.Services.AddHostedService<SyncScheduler>();
 builder.Services.AddSingleton<BankRegistrationState>();
 builder.Services.AddSingleton<ManualSyncState>();
-builder.Services.AddSingleton<RepairState>();
 
 var app = builder.Build();
 
 BankRegistrationEndpoints.Map(app);
 ManualSyncEndpoints.Map(app);
-RepairEndpoints.Map(app);
 
 await app.RunAsync();

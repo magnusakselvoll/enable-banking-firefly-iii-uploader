@@ -96,12 +96,4 @@ public sealed class FireflyIiiClient : IFireflyIiiClient
             transaction.Transactions.FirstOrDefault()?.ExternalId);
     }
 
-    public async Task UpdateTransactionAsync(string id, string journalId, DateOnly date, string? notes, CancellationToken cancellationToken = default)
-    {
-        var body = new TransactionUpdate([new TransactionSplitUpdate(journalId, date, notes)]);
-        var response = await _httpClient.PutAsJsonAsync($"api/v1/transactions/{id}", body, JsonOptions, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        _logger.LogInformation("Updated transaction {Id} (journal {JournalId}) to date {Date}.", id, journalId, date);
-    }
 }
