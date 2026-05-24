@@ -482,6 +482,7 @@ public sealed class TransactionSyncer
         foreach (var split in ffTxGroup.Attributes.Transactions)
         {
             if (string.IsNullOrEmpty(split.ExternalId)) continue;
+            if (string.IsNullOrEmpty(split.TransactionJournalId)) continue;
             if (!ebMap.TryGetValue(split.ExternalId, out var correction)) continue;
 
             changes.Add(new RepairChange(

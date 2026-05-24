@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace EnableBankingUploader.Core.FireflyIii.Models;
 
 public record TransactionSplitUpdate(
-    [property: JsonPropertyName("transaction_journal_id")] int TransactionJournalId,
+    [property: JsonPropertyName("transaction_journal_id")] string TransactionJournalId,
     [property: JsonPropertyName("date")] DateOnly Date,
     [property: JsonPropertyName("notes")] string? Notes);
 

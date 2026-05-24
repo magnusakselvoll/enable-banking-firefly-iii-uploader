@@ -8,7 +8,7 @@ public sealed class RepairPlan
 
 public sealed record RepairChange(
     string FireflyTransactionId,
-    int TransactionJournalId,
+    string TransactionJournalId,
     string ExternalId,
     string Description,
     string FireflyAccountName,

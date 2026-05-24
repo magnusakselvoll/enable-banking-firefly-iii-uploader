@@ -18,5 +18,5 @@ public interface IFireflyIiiClient
 
     Task CreateTransactionAsync(TransactionStore transaction, CancellationToken cancellationToken = default);
 
-    Task UpdateTransactionAsync(string id, int journalId, DateOnly date, string? notes, CancellationToken cancellationToken = default);
+    Task UpdateTransactionAsync(string id, string journalId, DateOnly date, string? notes, CancellationToken cancellationToken = default);
 }
