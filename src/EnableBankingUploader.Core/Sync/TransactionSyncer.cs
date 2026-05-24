@@ -404,7 +404,7 @@ public sealed class TransactionSyncer
 
                 var (_, fireflyAccount) = matches[0];
                 var accountChanges = await BuildAccountRepairChangesAsync(
-                    accountUid, fireflyAccount, startDate, today, fireflyEnd, cancellationToken);
+                    accountUid, fireflyAccount, startDate, fireflyEnd, cancellationToken);
                 changes.AddRange(accountChanges);
             }
         }
@@ -455,14 +455,13 @@ public sealed class TransactionSyncer
         string accountUid,
         Account fireflyAccount,
         DateOnly startDate,
-        DateOnly today,
         DateOnly fireflyEnd,
         CancellationToken cancellationToken)
     {
         _logger.LogInformation("Building repair plan for {Name} from {StartDate}.",
             fireflyAccount.Attributes.Name, startDate);
 
-        var ebTransactions = await _enableBanking.GetTransactionsAsync(accountUid, startDate, today, cancellationToken);
+        var ebTransactions = await _enableBanking.GetTransactionsAsync(accountUid, startDate, fireflyEnd, cancellationToken);
 
         var ebMap = new Dictionary<string, (DateOnly Date, string? Notes)>(StringComparer.OrdinalIgnoreCase);
         foreach (var ebTx in ebTransactions)
