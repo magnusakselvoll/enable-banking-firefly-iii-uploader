@@ -563,7 +563,7 @@ public sealed class TransactionSyncer
     }
 
     private static DateOnly? ActualDate(EnableBanking.Models.Transaction ebTx) =>
-        ebTx.TransactionDate ?? ebTx.BookingDate ?? ebTx.ValueDate;
+        ebTx.TransactionDate ?? ebTx.ValueDate ?? ebTx.BookingDate;
 
     private static string DirectionOf(string? creditDebitIndicator) =>
         string.Equals(creditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase) ? "CREDIT" : "DEBIT";

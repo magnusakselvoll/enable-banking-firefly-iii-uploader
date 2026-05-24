@@ -467,6 +467,26 @@ public class TransactionSyncerTests
     }
 
     [TestMethod]
+    public async Task SyncAsync_NullTransactionDate_FutureBookingDate_UsesValueDate()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        var valueDate = new DateOnly(2026, 5, 24);
+        var futureBookingDate = new DateOnly(2026, 5, 25);
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "ref-new",
+            transactionDate: null,
+            bookingDate: futureBookingDate,
+            valueDate: valueDate)]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Date == valueDate),
+            default);
+    }
+
+    [TestMethod]
     public async Task SyncAsync_AdditionalDataFields_AppearsInNotes()
     {
         var (syncer, eb, ff) = CreateSyncer();
