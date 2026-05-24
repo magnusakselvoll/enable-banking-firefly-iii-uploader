@@ -203,13 +203,17 @@ public sealed class TransactionSyncer
         var dateFrom = latestDate.HasValue
             ? latestDate.Value.AddDays(-_options.LookbackDays)
             : today.AddDays(-DefaultLookbackDays);
+        // If the latest stored transaction is future-dated (the date bug), extend the Firefly
+        // query to cover it so those transactions appear in existingExternalIds for deduplication,
+        // and to avoid the equal start==end date that causes Firefly to return HTML.
+        var fireflyDateTo = latestDate.HasValue && latestDate.Value > today ? latestDate.Value : today;
 
         _logger.LogInformation(
             "Planning {Name} (IBAN: {Iban}) from {DateFrom} to {DateTo}.",
-            fireflyAccount.Attributes.Name, iban, dateFrom, today);
+            fireflyAccount.Attributes.Name, iban, dateFrom, fireflyDateTo);
 
         var ebTransactions = await _enableBanking.GetTransactionsAsync(accountUid, dateFrom, today, cancellationToken);
-        var existingTransactions = await _firefly.GetTransactionsAsync(fireflyAccount.Id, dateFrom, today, cancellationToken);
+        var existingTransactions = await _firefly.GetTransactionsAsync(fireflyAccount.Id, dateFrom, fireflyDateTo, cancellationToken);
 
         var existingExternalIds = existingTransactions
             .SelectMany(t => t.Attributes.Transactions)
