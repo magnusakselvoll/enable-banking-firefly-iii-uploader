@@ -484,6 +484,7 @@ public sealed class TransactionSyncer
             if (string.IsNullOrEmpty(split.ExternalId)) continue;
             if (string.IsNullOrEmpty(split.TransactionJournalId)) continue;
             if (!ebMap.TryGetValue(split.ExternalId, out var correction)) continue;
+            if (split.Date == correction.Date) continue;
 
             changes.Add(new RepairChange(
                 FireflyTransactionId: ffTxGroup.Id,
