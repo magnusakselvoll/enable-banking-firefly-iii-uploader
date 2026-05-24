@@ -95,4 +95,5 @@ public sealed class FireflyIiiClient : IFireflyIiiClient
         _logger.LogInformation("Created transaction with external_id: {ExternalId}.",
             transaction.Transactions.FirstOrDefault()?.ExternalId);
     }
+
 }

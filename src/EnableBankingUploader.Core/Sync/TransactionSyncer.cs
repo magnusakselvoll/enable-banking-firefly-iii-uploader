@@ -1,3 +1,4 @@
+using System.Text.Json;
 using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.FireflyIii;
 using EnableBankingUploader.Core.FireflyIii.Models;
@@ -202,13 +203,17 @@ public sealed class TransactionSyncer
         var dateFrom = latestDate.HasValue
             ? latestDate.Value.AddDays(-_options.LookbackDays)
             : today.AddDays(-DefaultLookbackDays);
+        // If the latest stored transaction is future-dated (the date bug), extend the Firefly
+        // query to cover it so those transactions appear in existingExternalIds for deduplication,
+        // and to avoid the equal start==end date that causes Firefly to return HTML.
+        var fireflyDateTo = latestDate.HasValue && latestDate.Value > today ? latestDate.Value : today;
 
         _logger.LogInformation(
             "Planning {Name} (IBAN: {Iban}) from {DateFrom} to {DateTo}.",
-            fireflyAccount.Attributes.Name, iban, dateFrom, today);
+            fireflyAccount.Attributes.Name, iban, dateFrom, fireflyDateTo);
 
         var ebTransactions = await _enableBanking.GetTransactionsAsync(accountUid, dateFrom, today, cancellationToken);
-        var existingTransactions = await _firefly.GetTransactionsAsync(fireflyAccount.Id, dateFrom, today, cancellationToken);
+        var existingTransactions = await _firefly.GetTransactionsAsync(fireflyAccount.Id, dateFrom, fireflyDateTo, cancellationToken);
 
         var existingExternalIds = existingTransactions
             .SelectMany(t => t.Attributes.Transactions)
@@ -225,7 +230,7 @@ public sealed class TransactionSyncer
                 _logger.LogDebug("Skipping non-booked transaction (status={Status}).", ebTx.Status);
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipNonBooked,
-                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ActualDate(ebTx),
                     ebTx.RemittanceInformation?.FirstOrDefault() ?? "(no description)",
                     ebTx.TransactionAmount.Amount,
                     ebTx.TransactionAmount.Currency,
@@ -240,7 +245,7 @@ public sealed class TransactionSyncer
                 _logger.LogWarning("Booked transaction has no entry_reference or transaction_id on account {Uid}, skipping.", accountUid);
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipNoId,
-                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ActualDate(ebTx),
                     ebTx.RemittanceInformation?.FirstOrDefault() ?? "(no description)",
                     ebTx.TransactionAmount.Amount,
                     ebTx.TransactionAmount.Currency,
@@ -253,7 +258,7 @@ public sealed class TransactionSyncer
             {
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipDuplicate,
-                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ActualDate(ebTx),
                     ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)",
                     ebTx.TransactionAmount.Amount,
                     ebTx.TransactionAmount.Currency,
@@ -265,7 +270,7 @@ public sealed class TransactionSyncer
             var store = BuildTransactionStore(ebTx, externalId, fireflyAccount, runLabel);
             planned.Add(new PlannedTransaction(
                 SyncDecision.Create,
-                ebTx.BookingDate ?? ebTx.ValueDate,
+                ActualDate(ebTx),
                 ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)",
                 ebTx.TransactionAmount.Amount,
                 ebTx.TransactionAmount.Currency,
@@ -332,7 +337,7 @@ public sealed class TransactionSyncer
     {
         var isCredit = string.Equals(ebTx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase);
         var type = isCredit ? "deposit" : "withdrawal";
-        var date = ebTx.BookingDate ?? ebTx.ValueDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var date = ActualDate(ebTx) ?? DateOnly.FromDateTime(DateTime.UtcNow);
         var description = ebTx.RemittanceInformation?.FirstOrDefault()
             ?? ebTx.EntryReference
             ?? "(no description)";
@@ -385,9 +390,38 @@ public sealed class TransactionSyncer
                 sb.AppendLine(line);
         }
 
+        var ebData = new List<string>();
+        if (ebTx.TransactionDate.HasValue)
+            ebData.Add($"transaction_date: {ebTx.TransactionDate.Value:yyyy-MM-dd}");
+        if (ebTx.BookingDate.HasValue)
+            ebData.Add($"booking_date: {ebTx.BookingDate.Value:yyyy-MM-dd}");
+        if (ebTx.ValueDate.HasValue)
+            ebData.Add($"value_date: {ebTx.ValueDate.Value:yyyy-MM-dd}");
+        if (!string.IsNullOrEmpty(ebTx.Status))
+            ebData.Add($"status: {ebTx.Status}");
+        if (!string.IsNullOrEmpty(ebTx.CreditDebitIndicator))
+            ebData.Add($"credit_debit_indicator: {ebTx.CreditDebitIndicator}");
+        if (ebTx.AdditionalData is not null)
+        {
+            foreach (var (key, value) in ebTx.AdditionalData)
+                ebData.Add($"{key}: {value}");
+        }
+
+        if (ebData.Count > 0)
+        {
+            if (sb.Length > 0)
+                sb.AppendLine();
+            sb.AppendLine("Enable Banking data:");
+            foreach (var line in ebData)
+                sb.AppendLine(line);
+        }
+
         var result = sb.ToString().TrimEnd();
         return result.Length > 0 ? result : null;
     }
+
+    private static DateOnly? ActualDate(EnableBanking.Models.Transaction ebTx) =>
+        ebTx.TransactionDate ?? ebTx.ValueDate ?? ebTx.BookingDate;
 
     private static string DirectionOf(string? creditDebitIndicator) =>
         string.Equals(creditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase) ? "CREDIT" : "DEBIT";
