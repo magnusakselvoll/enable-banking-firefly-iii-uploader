@@ -53,6 +53,7 @@ public sealed class TransactionSyncer
         CancellationToken cancellationToken = default)
     {
         var runLabel = $"eb-sync-{DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss'Z'")}";
+        using var runScope = _logger.BeginScope(new Dictionary<string, object> { ["RunLabel"] = runLabel });
         var plan = new SyncPlan
         {
             RunLabel = runLabel,
@@ -125,6 +126,7 @@ public sealed class TransactionSyncer
         CancellationToken cancellationToken = default)
     {
         var summary = new SyncSummary { RunLabel = plan.RunLabel };
+        using var runScope = _logger.BeginScope(new Dictionary<string, object> { ["RunLabel"] = plan.RunLabel });
         summary.ValidSessions = plan.ValidSessions;
         summary.ExpiredSessions = plan.ExpiredSessions;
         summary.SessionFetchErrors = plan.SessionFetchErrors;
@@ -178,6 +180,7 @@ public sealed class TransactionSyncer
         string runLabel,
         CancellationToken cancellationToken)
     {
+        using var accountScope = _logger.BeginScope(new Dictionary<string, object> { ["AccountUid"] = accountUid, ["Bank"] = bankName });
         EnableBanking.Models.Account ebAccount;
         try
         {
@@ -289,6 +292,7 @@ public sealed class TransactionSyncer
         AccountSyncPlan accountPlan,
         CancellationToken cancellationToken)
     {
+        using var accountScope = _logger.BeginScope(new Dictionary<string, object> { ["AccountUid"] = accountPlan.AccountUid, ["Bank"] = accountPlan.BankName });
         if (accountPlan.FetchError)
             return new AccountSyncResult(accountPlan.AccountUid, accountPlan.BankName, accountPlan.Iban,
                 null, 0, 0, 0, 0, 0, Unmapped: false, FetchError: true);

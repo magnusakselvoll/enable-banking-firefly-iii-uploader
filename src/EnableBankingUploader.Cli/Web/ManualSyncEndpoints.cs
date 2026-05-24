@@ -80,6 +80,7 @@ internal static class ManualSyncEndpoints
         HttpRequest request,
         TransactionSyncer syncer,
         ManualSyncState state,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var form = await request.ReadFormAsync(ct);
@@ -88,6 +89,8 @@ internal static class ManualSyncEndpoints
         if (selectedUids.Count == 0)
             return Results.Redirect("/manual-sync?err=1&msg=" + Uri.EscapeDataString("No accounts selected."));
 
+        var logger = loggerFactory.CreateLogger(nameof(ManualSyncEndpoints));
+        using var manualScope = logger.BeginScope(new Dictionary<string, object> { ["Source"] = "manual", ["SelectedAccounts"] = selectedUids.Count });
         var plan = await syncer.BuildPlanAsync(selectedUids, ct);
         var token = state.Add(plan);
 
@@ -98,6 +101,7 @@ internal static class ManualSyncEndpoints
         HttpRequest request,
         TransactionSyncer syncer,
         ManualSyncState state,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var form = await request.ReadFormAsync(ct);
@@ -107,6 +111,8 @@ internal static class ManualSyncEndpoints
         if (plan is null)
             return Results.Redirect("/manual-sync?err=1&msg=" + Uri.EscapeDataString("Session expired or invalid. Please start again."));
 
+        var logger = loggerFactory.CreateLogger(nameof(ManualSyncEndpoints));
+        using var manualScope = logger.BeginScope(new Dictionary<string, object> { ["Source"] = "manual", ["RunLabel"] = plan.RunLabel });
         var summary = await syncer.ExecutePlanAsync(plan, ct);
         return Results.Content(Html.ManualSyncResult(summary), "text/html");
     }
