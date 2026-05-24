@@ -58,7 +58,8 @@ internal static class Html
         }
 
         sb.Append("<a href=\"/register\" class=\"btn\">+ Register new bank</a> ");
-        sb.Append("<a href=\"/manual-sync\" class=\"btn btn-secondary\">&#9654; Manual sync</a>");
+        sb.Append("<a href=\"/manual-sync\" class=\"btn btn-secondary\">&#9654; Manual sync</a> ");
+        sb.Append("<a href=\"/repair-dates\" class=\"btn btn-secondary\">&#128295; Repair dates</a>");
 
         if (sessions.Count == 0)
         {
@@ -293,6 +294,104 @@ internal static class Html
 
         sb.Append("<div class=\"actions\"><a href=\"/\" class=\"btn btn-secondary\">← Back to bank management</a></div>");
         return Page("Manual sync — done", sb.ToString());
+    }
+
+    public static string RepairSelect(IReadOnlyList<AccountSelectionRow> rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h2>Repair dates — select accounts</h2>");
+        sb.Append("<p>Re-fetches transactions from Enable Banking and updates Firefly III dates to the actual transaction date. Also refreshes notes with richer Enable Banking data.</p>");
+
+        if (rows.Count == 0)
+        {
+            sb.Append("<p>No accounts found. <a href=\"/register\">Register a bank</a> first.</p>");
+            sb.Append("<p><a href=\"/\">← Back</a></p>");
+            return Page("Repair dates", sb.ToString());
+        }
+
+        sb.Append("<form method=\"post\" action=\"/repair-dates/plan\">");
+        sb.Append("<table><thead><tr><th></th><th>Bank</th><th>IBAN</th><th>Status</th><th>Firefly account</th></tr></thead><tbody>");
+
+        foreach (var row in rows)
+        {
+            var (badgeClass, statusLabel) = BadgeFor(row.ValidUntil);
+            var disabled = (row.Expired || !row.Mapped) ? " disabled" : "";
+            var title = row.Expired ? "Session expired" : (!row.Mapped ? "No matching Firefly account" : "");
+            var titleAttr = !string.IsNullOrEmpty(title) ? $" title=\"{Encode(title)}\"" : "";
+            var ffName = row.Mapped ? Encode(row.FireflyAccountName) : "<em>Not mapped</em>";
+
+            sb.Append(
+                $"<tr>" +
+                $"<td><input type=\"checkbox\" name=\"accounts\" value=\"{Encode(row.AccountUid)}\"{disabled}{titleAttr}></td>" +
+                $"<td>{Encode(row.BankName)}</td>" +
+                $"<td>{Encode(row.Iban ?? row.AccountUid)}</td>" +
+                $"<td><span class=\"badge {badgeClass}\">{statusLabel}</span></td>" +
+                $"<td>{ffName}</td>" +
+                $"</tr>");
+        }
+
+        sb.Append("</tbody></table>");
+        sb.Append("<div class=\"field\" style=\"margin-top:1.5rem\">");
+        sb.Append("<label for=\"start_date\">Repair transactions from (date)</label>");
+        sb.Append("<input type=\"date\" id=\"start_date\" name=\"start_date\" value=\"2026-05-01\">");
+        sb.Append("</div>");
+        sb.Append("<div class=\"actions\"><button type=\"submit\" class=\"btn\">Preview changes →</button></div>");
+        sb.Append("</form>");
+        sb.Append("<p><a href=\"/\">← Back</a></p>");
+        return Page("Repair dates", sb.ToString());
+    }
+
+    public static string RepairPreview(RepairPlan plan, string token)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h2>Repair dates — preview</h2>");
+
+        if (plan.Changes.Count == 0)
+        {
+            sb.Append("<p>No transactions need updating in this date range.</p>");
+            sb.Append("<p><a href=\"/repair-dates\">← Back to account selection</a></p>");
+            return Page("Repair dates — preview", sb.ToString());
+        }
+
+        sb.Append($"<p><strong>{plan.Changes.Count} transaction(s)</strong> will be updated from {Encode(plan.StartDate.ToString("yyyy-MM-dd"))} onwards.</p>");
+
+        var byAccount = plan.Changes.GroupBy(c => c.FireflyAccountName);
+        foreach (var group in byAccount)
+        {
+            sb.Append($"<h2>{Encode(group.Key)}</h2>");
+            sb.Append("<table><thead><tr><th>Old date</th><th>New date</th><th>Description</th></tr></thead><tbody>");
+            foreach (var change in group)
+            {
+                var dateChanged = change.OldDate != change.NewDate;
+                var rowClass = dateChanged ? "tx-create" : "";
+                sb.Append(
+                    $"<tr class=\"{rowClass}\">" +
+                    $"<td>{Encode(change.OldDate.ToString("yyyy-MM-dd"))}</td>" +
+                    $"<td>{Encode(change.NewDate.ToString("yyyy-MM-dd"))}</td>" +
+                    $"<td>{Encode(change.Description)}</td>" +
+                    $"</tr>");
+            }
+            sb.Append("</tbody></table>");
+        }
+
+        sb.Append("<form method=\"post\" action=\"/repair-dates/execute\">");
+        sb.Append($"<input type=\"hidden\" name=\"token\" value=\"{Encode(token)}\">");
+        sb.Append($"<div class=\"actions\"><button type=\"submit\" class=\"btn\">Apply {plan.Changes.Count} update(s)</button></div>");
+        sb.Append("</form>");
+        sb.Append("<p><a href=\"/repair-dates\">← Back to account selection</a></p>");
+        return Page("Repair dates — preview", sb.ToString());
+    }
+
+    public static string RepairResult(RepairSummary summary)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h2>Repair dates — done</h2>");
+        sb.Append($"<p>Updated <strong>{summary.Updated}</strong> transaction(s).");
+        if (summary.Errors > 0)
+            sb.Append($" <span class=\"badge expired\">{summary.Errors} error(s)</span>");
+        sb.Append("</p>");
+        sb.Append("<div class=\"actions\"><a href=\"/\" class=\"btn btn-secondary\">← Back to bank management</a></div>");
+        return Page("Repair dates — done", sb.ToString());
     }
 
     public static string Error(string message) =>

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace EnableBankingUploader.Core.EnableBanking.Models;
@@ -13,7 +14,12 @@ public record Transaction(
     [property: JsonPropertyName("credit_debit_indicator")] string? CreditDebitIndicator,
     [property: JsonPropertyName("booking_date")] DateOnly? BookingDate,
     [property: JsonPropertyName("value_date")] DateOnly? ValueDate,
+    [property: JsonPropertyName("transaction_date")] DateOnly? TransactionDate,
     [property: JsonPropertyName("status")] string? Status,
     [property: JsonPropertyName("remittance_information")] IReadOnlyList<string>? RemittanceInformation,
     [property: JsonPropertyName("creditor_name")] string? CreditorName,
-    [property: JsonPropertyName("debtor_name")] string? DebtorName);
+    [property: JsonPropertyName("debtor_name")] string? DebtorName)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? AdditionalData { get; set; }
+}

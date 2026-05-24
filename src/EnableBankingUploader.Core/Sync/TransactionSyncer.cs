@@ -1,3 +1,4 @@
+using System.Text.Json;
 using EnableBankingUploader.Core.EnableBanking;
 using EnableBankingUploader.Core.FireflyIii;
 using EnableBankingUploader.Core.FireflyIii.Models;
@@ -225,7 +226,7 @@ public sealed class TransactionSyncer
                 _logger.LogDebug("Skipping non-booked transaction (status={Status}).", ebTx.Status);
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipNonBooked,
-                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ActualDate(ebTx),
                     ebTx.RemittanceInformation?.FirstOrDefault() ?? "(no description)",
                     ebTx.TransactionAmount.Amount,
                     ebTx.TransactionAmount.Currency,
@@ -240,7 +241,7 @@ public sealed class TransactionSyncer
                 _logger.LogWarning("Booked transaction has no entry_reference or transaction_id on account {Uid}, skipping.", accountUid);
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipNoId,
-                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ActualDate(ebTx),
                     ebTx.RemittanceInformation?.FirstOrDefault() ?? "(no description)",
                     ebTx.TransactionAmount.Amount,
                     ebTx.TransactionAmount.Currency,
@@ -253,7 +254,7 @@ public sealed class TransactionSyncer
             {
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipDuplicate,
-                    ebTx.BookingDate ?? ebTx.ValueDate,
+                    ActualDate(ebTx),
                     ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)",
                     ebTx.TransactionAmount.Amount,
                     ebTx.TransactionAmount.Currency,
@@ -265,7 +266,7 @@ public sealed class TransactionSyncer
             var store = BuildTransactionStore(ebTx, externalId, fireflyAccount, runLabel);
             planned.Add(new PlannedTransaction(
                 SyncDecision.Create,
-                ebTx.BookingDate ?? ebTx.ValueDate,
+                ActualDate(ebTx),
                 ebTx.RemittanceInformation?.FirstOrDefault() ?? ebTx.EntryReference ?? "(no description)",
                 ebTx.TransactionAmount.Amount,
                 ebTx.TransactionAmount.Currency,
@@ -332,7 +333,7 @@ public sealed class TransactionSyncer
     {
         var isCredit = string.Equals(ebTx.CreditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase);
         var type = isCredit ? "deposit" : "withdrawal";
-        var date = ebTx.BookingDate ?? ebTx.ValueDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var date = ActualDate(ebTx) ?? DateOnly.FromDateTime(DateTime.UtcNow);
         var description = ebTx.RemittanceInformation?.FirstOrDefault()
             ?? ebTx.EntryReference
             ?? "(no description)";
@@ -354,6 +355,147 @@ public sealed class TransactionSyncer
         return new TransactionStore(
             ErrorIfDuplicateHash: false,
             Transactions: [split]);
+    }
+
+    public async Task<RepairPlan> BuildRepairPlanAsync(
+        IReadOnlySet<string>? accountUidFilter,
+        DateOnly startDate,
+        CancellationToken cancellationToken = default)
+    {
+        var allSessions = await _sessionStore.ListAsync(cancellationToken);
+        var validSessions = allSessions.Where(s => s.ValidUntil >= DateTimeOffset.UtcNow).ToList();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var fireflyEnd = today.AddDays(180);
+        var fireflyAccounts = await _firefly.GetAssetAccountsAsync(cancellationToken);
+        var changes = new List<RepairChange>();
+
+        foreach (var stored in validSessions)
+        {
+            EnableBanking.Models.Session session;
+            try
+            {
+                session = await _enableBanking.GetSessionAsync(stored.SessionId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to fetch session {SessionId} during repair plan build.", stored.SessionId);
+                continue;
+            }
+
+            foreach (var accountUid in session.AccountUids)
+            {
+                if (accountUidFilter is not null && !accountUidFilter.Contains(accountUid))
+                    continue;
+
+                EnableBanking.Models.Account ebAccount;
+                try
+                {
+                    ebAccount = await _enableBanking.GetAccountAsync(accountUid, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch Enable Banking account {Uid} during repair plan build.", accountUid);
+                    continue;
+                }
+
+                var matches = _accountMatcher.MatchAccounts([ebAccount], fireflyAccounts);
+                if (matches.Count == 0)
+                    continue;
+
+                var (_, fireflyAccount) = matches[0];
+                var accountChanges = await BuildAccountRepairChangesAsync(
+                    accountUid, fireflyAccount, startDate, today, fireflyEnd, cancellationToken);
+                changes.AddRange(accountChanges);
+            }
+        }
+
+        return new RepairPlan { StartDate = startDate, Changes = changes };
+    }
+
+    public async Task<RepairSummary> ExecuteRepairPlanAsync(
+        RepairPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        var summary = new RepairSummary { StartDate = plan.StartDate };
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            foreach (var change in plan.Changes)
+            {
+                try
+                {
+                    await _firefly.UpdateTransactionAsync(
+                        change.FireflyTransactionId,
+                        change.TransactionJournalId,
+                        change.NewDate,
+                        change.NewNotes,
+                        cancellationToken);
+                    summary.Updated++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to update transaction {ExternalId} (Firefly ID: {Id}).",
+                        change.ExternalId, change.FireflyTransactionId);
+                    summary.Errors++;
+                }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        _logger.LogInformation("Repair: {Updated} transaction(s) updated, {Errors} error(s).",
+            summary.Updated, summary.Errors);
+        return summary;
+    }
+
+    private async Task<IReadOnlyList<RepairChange>> BuildAccountRepairChangesAsync(
+        string accountUid,
+        Account fireflyAccount,
+        DateOnly startDate,
+        DateOnly today,
+        DateOnly fireflyEnd,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Building repair plan for {Name} from {StartDate}.",
+            fireflyAccount.Attributes.Name, startDate);
+
+        var ebTransactions = await _enableBanking.GetTransactionsAsync(accountUid, startDate, today, cancellationToken);
+
+        var ebMap = new Dictionary<string, (DateOnly Date, string? Notes)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var ebTx in ebTransactions)
+        {
+            var actualDate = ActualDate(ebTx);
+            if (actualDate is null || actualDate.Value < startDate) continue;
+            var externalId = ebTx.EntryReference ?? ebTx.TransactionId;
+            if (string.IsNullOrEmpty(externalId)) continue;
+            var richNotes = BuildNotes(ebTx, descriptionUsesEntryReference: ebTx.RemittanceInformation is null or { Count: 0 });
+            ebMap[externalId] = (actualDate.Value, richNotes);
+        }
+
+        var ffTransactions = await _firefly.GetTransactionsAsync(fireflyAccount.Id, startDate, fireflyEnd, cancellationToken);
+
+        var changes = new List<RepairChange>();
+        foreach (var ffTxGroup in ffTransactions)
+        foreach (var split in ffTxGroup.Attributes.Transactions)
+        {
+            if (string.IsNullOrEmpty(split.ExternalId)) continue;
+            if (!ebMap.TryGetValue(split.ExternalId, out var correction)) continue;
+
+            changes.Add(new RepairChange(
+                FireflyTransactionId: ffTxGroup.Id,
+                TransactionJournalId: split.TransactionJournalId,
+                ExternalId: split.ExternalId,
+                Description: split.Description ?? "(no description)",
+                FireflyAccountName: fireflyAccount.Attributes.Name,
+                OldDate: split.Date,
+                NewDate: correction.Date,
+                NewNotes: correction.Notes));
+        }
+
+        return changes;
     }
 
     private static string? BuildNotes(EnableBanking.Models.Transaction ebTx, bool descriptionUsesEntryReference)
@@ -385,9 +527,38 @@ public sealed class TransactionSyncer
                 sb.AppendLine(line);
         }
 
+        var ebData = new List<string>();
+        if (ebTx.TransactionDate.HasValue)
+            ebData.Add($"transaction_date: {ebTx.TransactionDate.Value:yyyy-MM-dd}");
+        if (ebTx.BookingDate.HasValue)
+            ebData.Add($"booking_date: {ebTx.BookingDate.Value:yyyy-MM-dd}");
+        if (ebTx.ValueDate.HasValue)
+            ebData.Add($"value_date: {ebTx.ValueDate.Value:yyyy-MM-dd}");
+        if (!string.IsNullOrEmpty(ebTx.Status))
+            ebData.Add($"status: {ebTx.Status}");
+        if (!string.IsNullOrEmpty(ebTx.CreditDebitIndicator))
+            ebData.Add($"credit_debit_indicator: {ebTx.CreditDebitIndicator}");
+        if (ebTx.AdditionalData is not null)
+        {
+            foreach (var (key, value) in ebTx.AdditionalData)
+                ebData.Add($"{key}: {value}");
+        }
+
+        if (ebData.Count > 0)
+        {
+            if (sb.Length > 0)
+                sb.AppendLine();
+            sb.AppendLine("Enable Banking data:");
+            foreach (var line in ebData)
+                sb.AppendLine(line);
+        }
+
         var result = sb.ToString().TrimEnd();
         return result.Length > 0 ? result : null;
     }
+
+    private static DateOnly? ActualDate(EnableBanking.Models.Transaction ebTx) =>
+        ebTx.TransactionDate ?? ebTx.BookingDate ?? ebTx.ValueDate;
 
     private static string DirectionOf(string? creditDebitIndicator) =>
         string.Equals(creditDebitIndicator, "CRDT", StringComparison.OrdinalIgnoreCase) ? "CREDIT" : "DEBIT";

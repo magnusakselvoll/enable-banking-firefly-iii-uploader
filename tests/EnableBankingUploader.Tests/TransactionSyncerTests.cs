@@ -36,15 +36,19 @@ public class TransactionSyncerTests
         string creditDebit = "DBIT",
         string amount = "100.00",
         string status = "BOOK",
-        DateOnly? date = null,
+        DateOnly? bookingDate = null,
+        DateOnly? transactionDate = null,
+        DateOnly? valueDate = null,
         IReadOnlyList<string>? remittance = null,
         string? creditor = "Creditor Name",
         string? debtor = null) =>
         new(txId, entryRef,
             new TransactionAmount(amount, "NOK"),
             creditDebit,
-            date ?? new DateOnly(2024, 1, 15),
-            null, status, remittance ?? ["Test payment"], creditor, debtor);
+            bookingDate ?? (transactionDate is null ? new DateOnly(2024, 1, 15) : null),
+            valueDate,
+            transactionDate,
+            status, remittance ?? ["Test payment"], creditor, debtor);
 
     private static Core.FireflyIii.Models.Transaction FfTransaction(string externalId) =>
         new("ff-tx-1", new Core.FireflyIii.Models.TransactionGroupAttributes(
@@ -402,6 +406,107 @@ public class TransactionSyncerTests
             Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
                 s.Transactions[0].Description == "EB-9988" &&
                 (s.Transactions[0].Notes == null || !s.Transactions[0].Notes!.Contains("Entry reference:"))),
+            default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_TransactionDatePresent_UsesTransactionDateNotBookingDate()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        var transactionDate = new DateOnly(2026, 5, 1);
+        var bookingDate = new DateOnly(2026, 5, 3);
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "ref-new",
+            transactionDate: transactionDate,
+            bookingDate: bookingDate)]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Date == transactionDate),
+            default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_NullBookingDateFutureValueDate_UsesTransactionDate()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        var transactionDate = new DateOnly(2026, 5, 15);
+        var futureValueDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30);
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "ref-new",
+            transactionDate: transactionDate,
+            bookingDate: null,
+            valueDate: futureValueDate)]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Date == transactionDate),
+            default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_NullTransactionDate_FallsBackToBookingDate()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        var bookingDate = new DateOnly(2026, 5, 10);
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "ref-new",
+            transactionDate: null,
+            bookingDate: bookingDate)]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Date == bookingDate),
+            default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_AdditionalDataFields_AppearsInNotes()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        var tx = EbTransaction(entryRef: "ref-new");
+        using var doc = System.Text.Json.JsonDocument.Parse("{\"merchant_category_code\":\"5411\",\"bank_transaction_code\":\"PMNT\"}");
+        tx.AdditionalData = new Dictionary<string, System.Text.Json.JsonElement>
+        {
+            ["merchant_category_code"] = doc.RootElement.GetProperty("merchant_category_code").Clone(),
+            ["bank_transaction_code"] = doc.RootElement.GetProperty("bank_transaction_code").Clone(),
+        };
+        SetupDefaults(eb, ff, ebTx: [tx]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Notes != null &&
+                s.Transactions[0].Notes!.Contains("merchant_category_code:") &&
+                s.Transactions[0].Notes!.Contains("bank_transaction_code:")),
+            default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_DateFields_AppearsInNotes()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(
+            entryRef: "ref-new",
+            transactionDate: new DateOnly(2026, 5, 1),
+            bookingDate: new DateOnly(2026, 5, 3),
+            valueDate: new DateOnly(2026, 5, 5))]);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).CreateTransactionAsync(
+            Arg.Is<Core.FireflyIii.Models.TransactionStore>(s =>
+                s.Transactions[0].Notes != null &&
+                s.Transactions[0].Notes!.Contains("transaction_date: 2026-05-01") &&
+                s.Transactions[0].Notes!.Contains("booking_date: 2026-05-03") &&
+                s.Transactions[0].Notes!.Contains("value_date: 2026-05-05")),
             default);
     }
 
