@@ -119,8 +119,8 @@ internal static class BankRegistrationEndpoints
         var form = await request.ReadFormAsync(ct);
         var aspspValue = form["aspsp"].FirstOrDefault() ?? string.Empty;
         var parts = aspspValue.Split('|', 2);
-        var aspspName = parts[0];
-        var aspspCountry = parts.Length > 1 ? parts[1] : string.Empty;
+        var aspspName = StripControlChars(parts[0]);
+        var aspspCountry = StripControlChars(parts.Length > 1 ? parts[1] : string.Empty);
 
         if (string.IsNullOrWhiteSpace(aspspName) || string.IsNullOrWhiteSpace(aspspCountry))
             return Results.Content(Html.Error("Invalid bank selection."), "text/html");
@@ -258,5 +258,15 @@ internal static class BankRegistrationEndpoints
         logger.LogInformation("Removed session {SessionId}.", sessionId);
 
         return Results.Redirect("/?msg=Bank+removed.");
+    }
+
+    // Strips control characters (e.g. CR/LF) from user-supplied values before they reach
+    // log scopes or log messages, preventing log forging via a crafted aspsp form field.
+    private static string StripControlChars(string value)
+    {
+        if (value.Length == 0 || !value.Any(char.IsControl))
+            return value;
+
+        return new string(value.Where(c => !char.IsControl(c)).ToArray());
     }
 }
