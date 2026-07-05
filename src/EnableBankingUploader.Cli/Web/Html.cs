@@ -39,14 +39,26 @@ internal static class Html
             .tx-skip { color: #888; }
             .tx-create { font-weight: 600; }
             .actions { margin-top: 1.5rem; }
+            .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #eee; text-align: center; font-size: .8rem; color: #999; }
+            .footer a { color: #999; }
+            .footer a:hover { text-decoration: underline; }
           </style>
         </head>
         <body>
           <h1>Enable Banking Uploader — Bank Management</h1>
           {{body}}
+          {{Footer()}}
         </body>
         </html>
         """;
+
+    private static string Footer()
+    {
+        var version = AppVersion.ReleaseUrl is not null
+            ? $"<a href=\"{Encode(AppVersion.ReleaseUrl)}\" target=\"_blank\" rel=\"noopener\">{Encode(AppVersion.Display)}</a>"
+            : Encode(AppVersion.Display);
+        return $"<footer class=\"footer\">Enable Banking Uploader &middot; {version}</footer>";
+    }
 
     public static string Index(IReadOnlyList<StoredSession> sessions, string? banner, bool isError)
     {

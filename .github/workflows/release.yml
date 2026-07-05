@@ -38,7 +38,8 @@ jobs:
             -c Release \
             /t:PublishContainer \
             /p:ContainerRegistry=ghcr.io \
-            /p:ContainerImageTag=${{ steps.tags.outputs.version }}
+            /p:ContainerImageTag=${{ steps.tags.outputs.version }} \
+            /p:Version=${{ steps.tags.outputs.version }}
 
       - name: Push latest image
         run: |
@@ -46,7 +47,8 @@ jobs:
             -c Release \
             /t:PublishContainer \
             /p:ContainerRegistry=ghcr.io \
-            /p:ContainerImageTag=latest
+            /p:ContainerImageTag=latest \
+            /p:Version=${{ steps.tags.outputs.version }}
 
       - name: Add Docker image reference to release notes
         env:
