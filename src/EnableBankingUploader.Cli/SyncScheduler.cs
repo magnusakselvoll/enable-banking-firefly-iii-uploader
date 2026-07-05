@@ -44,6 +44,7 @@ internal sealed class SyncScheduler : BackgroundService
 
             await Task.Delay(delay, stoppingToken);
 
+            using var scheduledScope = _logger.BeginScope(new Dictionary<string, object> { ["Source"] = "scheduled" });
             _logger.LogInformation("Starting scheduled sync.");
             try
             {
