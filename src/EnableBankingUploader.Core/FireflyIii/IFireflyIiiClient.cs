@@ -16,5 +16,7 @@ public interface IFireflyIiiClient
         DateOnly dateTo,
         CancellationToken cancellationToken = default);
 
+    Task<bool> ExistsByExternalIdAsync(string externalId, CancellationToken cancellationToken = default);
+
     Task CreateTransactionAsync(TransactionStore transaction, CancellationToken cancellationToken = default);
 }

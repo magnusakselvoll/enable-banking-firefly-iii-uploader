@@ -257,7 +257,11 @@ public sealed class TransactionSyncer
                 continue;
             }
 
-            if (existingExternalIds.Contains(externalId))
+            // Fast path: the transaction is in the date-windowed dedup set. Fallback: a direct
+            // external_id search catches back-dated transactions (value_date < booking_date) whose
+            // stored copy falls outside that window but which Enable Banking keeps re-fetching (#24).
+            if (existingExternalIds.Contains(externalId)
+                || await _firefly.ExistsByExternalIdAsync(externalId, cancellationToken))
             {
                 planned.Add(new PlannedTransaction(
                     SyncDecision.SkipDuplicate,

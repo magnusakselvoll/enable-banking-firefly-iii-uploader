@@ -167,6 +167,37 @@ public class TransactionSyncerTests
         await syncer.SyncAsync();
 
         await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
+        // Fast path: found in the date-window set, so the external_id search is not consulted.
+        await ff.DidNotReceive().ExistsByExternalIdAsync(Arg.Any<string>(), default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_BackDatedExternalIdOutsideWindow_SkipsViaSearchFallback()
+    {
+        // #24: the stored copy is value-dated and falls outside the date-window dedup set, but
+        // Enable Banking keeps re-fetching it by booking date. The external_id search backstops it.
+        var (syncer, eb, ff) = CreateSyncer();
+        SetupDefaults(eb, ff,
+            ebTx: [EbTransaction(entryRef: "back-dated")],
+            ffTx: []);
+        ff.ExistsByExternalIdAsync("back-dated", default).Returns(true);
+
+        await syncer.SyncAsync();
+
+        await ff.DidNotReceive().CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_UnknownExternalId_SearchMisses_CreatesTransaction()
+    {
+        var (syncer, eb, ff) = CreateSyncer();
+        SetupDefaults(eb, ff, ebTx: [EbTransaction(entryRef: "ref-new")]);
+        ff.ExistsByExternalIdAsync("ref-new", default).Returns(false);
+
+        await syncer.SyncAsync();
+
+        await ff.Received(1).ExistsByExternalIdAsync("ref-new", default);
+        await ff.Received(1).CreateTransactionAsync(Arg.Any<Core.FireflyIii.Models.TransactionStore>(), default);
     }
 
     [TestMethod]
