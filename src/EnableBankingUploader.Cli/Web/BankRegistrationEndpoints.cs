@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.RegularExpressions;
 
 namespace EnableBankingUploader.Cli.Web;
 
@@ -262,11 +263,10 @@ internal static class BankRegistrationEndpoints
 
     // Strips control characters (e.g. CR/LF) from user-supplied values before they reach
     // log scopes or log messages, preventing log forging via a crafted aspsp form field.
-    private static string StripControlChars(string value)
-    {
-        if (value.Length == 0 || !value.Any(char.IsControl))
-            return value;
-
-        return new string(value.Where(c => !char.IsControl(c)).ToArray());
-    }
+    // Uses Regex.Replace rather than a manual char filter: CodeQL's cs/log-forging query
+    // only recognizes a fixed set of calls (String.Replace/Remove/ReplaceLineEndings,
+    // Regex.Replace) as sanitizing barriers, so an equivalent hand-rolled filter would
+    // still be flagged as a false positive.
+    private static string StripControlChars(string value) =>
+        Regex.Replace(value, @"\p{Cc}", string.Empty);
 }
