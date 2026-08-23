@@ -7,6 +7,9 @@ bin/
 *.DotSettings.user
 .idea/
 
+# macOS
+.DS_Store
+
 # Secrets — PEM keys, .env files, tokens
 /secrets/
 
